@@ -1,0 +1,4 @@
+PyQt6
+MetaTrader5
+pandas
+numpy

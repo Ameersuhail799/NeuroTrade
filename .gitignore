@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+data/database.db
+data/config.json
+data/neurotrade.log
+data/models/*.pkl
+data/models/*.joblib
+
+# Local SQLite databases, logs, archives, and staging
+*.db
+*.db-shm
+*.db-wal
+neurotrade.db
+*.log
+*.zip
+neurotrade_patch/
+
+# Keep folder structure
+!data/.gitkeep
+!data/models/.gitkeep
