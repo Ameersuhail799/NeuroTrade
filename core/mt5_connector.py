@@ -1,4 +1,6 @@
+import glob
 import logging
+import os
 import threading
 from typing import Optional, List, Any
 
@@ -24,6 +26,22 @@ class MT5Connector:
         return mapping.get(mode, f"UNKNOWN({mode})")
 
     @classmethod
+    def _find_installed_terminals(cls) -> List[str]:
+        """Scan common Windows paths for existing terminal64.exe installations."""
+        candidates = []
+        patterns = [
+            r"C:\Program Files\*MetaTrader*\terminal64.exe",
+            r"C:\Program Files\*MT5*\terminal64.exe",
+            r"C:\Program Files (x86)\*MetaTrader*\terminal64.exe",
+            r"C:\Program Files (x86)\*MT5*\terminal64.exe",
+        ]
+        for pattern in patterns:
+            for path in glob.glob(pattern):
+                if os.path.isfile(path) and path not in candidates:
+                    candidates.append(path)
+        return candidates
+
+    @classmethod
     def initialize(cls) -> bool:
         """Initialize or acquire an MT5 terminal session with reference counting."""
         with cls._lock:
@@ -45,17 +63,45 @@ class MT5Connector:
                 # Connection dropped or invalid; reset count
                 cls._active_sessions = 0
 
-            try:
-                if MT5_PATH:
-                    initialized = mt5.initialize(MT5_PATH)
-                else:
-                    initialized = mt5.initialize()
-            except Exception as exc:
-                logging.error(f"MT5 initialization exception: {exc}")
-                return False
+            initialized = False
+            last_err = None
 
+            # a) If MT5_PATH is set and exists on disk, try mt5.initialize(MT5_PATH)
+            if MT5_PATH and os.path.isfile(MT5_PATH):
+                try:
+                    initialized = mt5.initialize(MT5_PATH)
+                except Exception as exc:
+                    last_err = exc
+
+            # b) Otherwise (or if step a fails), try mt5.initialize() with no arguments
+            # so it attaches to any currently running MT5 terminal
             if not initialized:
-                logging.error(f"MT5 initialization failed. Error code: {mt5.last_error()}")
+                try:
+                    initialized = mt5.initialize()
+                except Exception as exc:
+                    last_err = exc
+
+            # c) If that still fails on Windows, scan common installation directories
+            if not initialized:
+                discovered_paths = cls._find_installed_terminals()
+                for path in discovered_paths:
+                    if path == MT5_PATH:
+                        continue
+                    try:
+                        initialized = mt5.initialize(path)
+                        if initialized:
+                            logging.info(f"Connected to discovered MT5 terminal at: {path}")
+                            break
+                    except Exception as exc:
+                        last_err = exc
+
+            # d) If no MT5 terminal is installed or running, log a concise warning
+            if not initialized:
+                err_code = mt5.last_error() if hasattr(mt5, "last_error") else last_err
+                logging.warning(
+                    f"MT5 terminal is offline or could not be initialized ({err_code}). "
+                    "Ensure MT5 is running and logged into a DEMO account."
+                )
                 return False
 
             account_info = mt5.account_info()

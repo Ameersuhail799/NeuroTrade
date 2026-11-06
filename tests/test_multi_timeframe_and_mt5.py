@@ -103,6 +103,21 @@ class MT5ConnectorTests(unittest.TestCase):
         self.assertEqual(MT5Connector._active_sessions, 0)
         mock_mt5.shutdown.assert_called_once()
 
+    @patch("core.mt5_connector.os.path.isfile")
+    @patch("core.mt5_connector.mt5")
+    def test_mt5_initialize_falls_back_when_path_missing(self, mock_mt5, mock_isfile):
+        # MT5_PATH does not exist on disk
+        mock_isfile.return_value = False
+        mock_acc = MagicMock()
+        mock_acc.trade_mode = 0
+        mock_mt5.initialize.return_value = True
+        mock_mt5.account_info.return_value = mock_acc
+        mock_mt5.ACCOUNT_TRADE_MODE_DEMO = 0
+
+        self.assertTrue(MT5Connector.initialize())
+        # Verify mt5.initialize() was called without arguments (or empty kwargs)
+        mock_mt5.initialize.assert_called_once_with()
+
 
 class MultiTimeframeCoordinatorTests(unittest.TestCase):
     def test_bar_count_enforcement(self):

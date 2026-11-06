@@ -2,7 +2,7 @@ DARK_STYLE = """
 QWidget {
     background-color: #111418;
     color: #d5d8dc;
-    font-size: 12px;
+    font-size: 9pt;
 }
 
 QMainWindow,

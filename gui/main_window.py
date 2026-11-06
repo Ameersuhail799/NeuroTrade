@@ -40,6 +40,7 @@ class MainWindow(QMainWindow):
         self._chart_worker = None
         self._data_worker = None
         self._initial_chart_requested = False
+        self._mt5_connected = False
         self._chart_request_source = "manual"
         self._indicator_df = None
         self._indicator_meta = None
@@ -379,7 +380,8 @@ class MainWindow(QMainWindow):
         volume_max = status.get("volume_max", "--")
 
         db_state = "ok" if db_status == "OK" else "fail"
-        mt5_state = "ok" if mt5_status == "OK" else "fail"
+        self._mt5_connected = (mt5_status == "OK")
+        mt5_state = "ok" if self._mt5_connected else "fail"
         symbol_state = "ok" if symbol not in ("", "--", None) else "fail"
 
         self._set_label_state(self.db_value, db_status, db_state)
@@ -405,10 +407,16 @@ class MainWindow(QMainWindow):
 
         if not self._initial_chart_requested:
             self._initial_chart_requested = True
-            self.request_chart_data("initial")
-
-            if self.live_chart_checkbox.isChecked():
-                self._chart_timer.start()
+            if self._mt5_connected:
+                self.request_chart_data("initial")
+                if self.live_chart_checkbox.isChecked():
+                    self._chart_timer.start()
+            else:
+                self.live_chart_checkbox.blockSignals(True)
+                self.live_chart_checkbox.setChecked(False)
+                self.live_chart_checkbox.blockSignals(False)
+                self.chart_status_label.setStyleSheet("color: #9aa0a6;")
+                self.chart_status_label.setText("MT5 offline (use SQLite in Data/Signals tabs)")
 
     def _enable_chart_controls(self):
         self.symbol_combo.setEnabled(True)
@@ -487,6 +495,15 @@ class MainWindow(QMainWindow):
         self.chart_status_label.setStyleSheet("color: #e74c3c;")
         self.chart_status_label.setText("Chart error. Check Logs.")
         self.append_log(message)
+
+        if self._chart_request_source == "timer" and ("MT5" in message or "initialize" in message.lower()):
+            self.live_chart_checkbox.blockSignals(True)
+            self.live_chart_checkbox.setChecked(False)
+            self.live_chart_checkbox.blockSignals(False)
+            self._chart_timer.stop()
+            self.chart_status_label.setStyleSheet("color: #9aa0a6;")
+            self.chart_status_label.setText("MT5 offline (use SQLite in Data/Signals tabs)")
+            self.append_log("Live chart timer paused due to MT5 offline.")
 
     def _on_live_chart_toggled(self, checked: bool):
         if checked:
