@@ -21,6 +21,11 @@ import numpy as np
 import pandas as pd
 
 from core.indicators import IndicatorEngine
+from core.market_regimes import (
+    InstrumentProfile,
+    IntradayStrategyConfig,
+    MarketRegimeAnalyzer,
+)
 
 
 @dataclass
@@ -62,7 +67,7 @@ class IntradaySignalEngine:
     it does not guarantee that an order should be placed or filled.
     """
 
-    VERSION = "intraday-mtf-v1"
+    VERSION = "intraday-mtf-v2"
     TREND_TIMEFRAME = "1H"
     SETUP_TIMEFRAME = "15m"
     TRIGGER_TIMEFRAME = "5m"
@@ -85,6 +90,9 @@ class IntradaySignalEngine:
     TARGET_R_MULTIPLES = (1.5, 2.0)
     MAX_ENTRY_EXTENSION_ATR = 1.5
 
+    def __init__(self, config: Optional[IntradayStrategyConfig] = None):
+        self.config = config or IntradayStrategyConfig()
+
     def generate_signal(
         self,
         h1: pd.DataFrame,
@@ -93,6 +101,7 @@ class IntradaySignalEngine:
         symbol: str = "XAUUSD",
         digits: Optional[int] = None,
         exclude_latest: bool = True,
+        point: Optional[float] = None,
     ) -> IntradaySignal:
         """Evaluate aligned H1/M15/M5 candles and return a signal candidate.
 
@@ -105,7 +114,15 @@ class IntradaySignalEngine:
                 available.
             exclude_latest: Exclude the last candle from every timeframe.
                 Keep True for MT5 data that includes the current forming bar.
+            point: Broker point size. If omitted, looked up from instrument profile.
         """
+        profile = MarketRegimeAnalyzer.resolve_profile(symbol)
+        effective_point = (
+            float(point)
+            if (point is not None and float(point) > 0)
+            else profile.default_point
+        )
+
         h1_closed = self._prepare_frame(
             h1, "H1", self.MIN_H1_BARS, exclude_latest
         )
@@ -128,12 +145,85 @@ class IntradaySignalEngine:
         m5_last = m5_ind.iloc[-1]
 
         decision_time = self._format_time(m5_last.get("time", "unavailable"))
+        decision_ts = (
+            pd.Timestamp(m5_last.get("time"))
+            if ("time" in m5_last and pd.notna(m5_last.get("time")))
+            else None
+        )
+        session_name = (
+            MarketRegimeAnalyzer.classify_session(decision_ts)
+            if decision_ts is not None
+            else "UNKNOWN"
+        )
+        in_rollover = (
+            MarketRegimeAnalyzer.is_in_rollover(decision_ts, profile.rollover_hours_utc)
+            if decision_ts is not None
+            else False
+        )
+        in_prime = (
+            MarketRegimeAnalyzer.is_in_prime_session(decision_ts, profile.prime_hours_utc)
+            if decision_ts is not None
+            else True
+        )
+
         regime, trend_direction, trend_reasons = self._classify_h1_trend(h1_ind)
-        setup_direction, setup_reasons, setup_conflicts = self._classify_m15_setup(m15_ind)
-        trigger_direction, trigger_reasons, trigger_conflicts = self._classify_m5_trigger(m5_ind, m15_last)
+        setup_direction, setup_reasons, setup_conflicts = self._classify_m15_setup(
+            m15_ind, profile=profile
+        )
+        trigger_direction, trigger_reasons, trigger_conflicts = self._classify_m5_trigger(
+            m5_ind,
+            m15_last,
+            session_name=session_name,
+            block_asian_breakouts=self.config.block_asian_breakouts,
+        )
+
+        # Microstructure & regime diagnostics
+        m15_er_series = MarketRegimeAnalyzer.kaufman_efficiency_ratio(
+            m15_closed["close"], period=10
+        )
+        m15_er = (
+            float(m15_er_series.iloc[-1])
+            if (len(m15_er_series) > 0 and pd.notna(m15_er_series.iloc[-1]))
+            else 0.5
+        )
+        m15_atr_pct = MarketRegimeAnalyzer.atr_percentile_rank(
+            m15_ind["atr_14"], lookback=100
+        )
+        m5_body_ratio = MarketRegimeAnalyzer.candle_body_ratio(
+            self._safe_float(m5_last.get("open")),
+            self._safe_float(m5_last.get("high")),
+            self._safe_float(m5_last.get("low")),
+            self._safe_float(m5_last.get("close")),
+        )
 
         reasons = trend_reasons + setup_reasons + trigger_reasons
         conflicts = setup_conflicts + trigger_conflicts
+
+        session_conflicts: List[str] = []
+        if self.config.enable_rollover_block and in_rollover:
+            session_conflicts.append(
+                "Setup blocked: timestamp falls inside the daily rollover spread blackout (21:00-23:00 UTC)."
+            )
+        if self.config.restrict_to_prime_sessions and not in_prime:
+            session_conflicts.append(
+                f"Setup blocked: timestamp ({decision_ts.strftime('%H:%M') if decision_ts else 'N/A'} UTC) is outside prime liquidity hours for {profile.symbol}."
+            )
+
+        regime_conflicts: List[str] = []
+        if self.config.enable_regime_filter:
+            if m15_atr_pct < self.config.min_atr_percentile:
+                regime_conflicts.append(
+                    f"Market regime filter: M15 ATR percentile ({m15_atr_pct:.1f}%) is below minimum threshold ({self.config.min_atr_percentile:.1f}%). Market is dead/compressed."
+                )
+            if m15_atr_pct > self.config.max_atr_percentile:
+                regime_conflicts.append(
+                    f"Market regime filter: M15 ATR percentile ({m15_atr_pct:.1f}%) exceeds maximum threshold ({self.config.max_atr_percentile:.1f}%). Extreme volatility spike."
+                )
+            if m15_er < self.config.min_efficiency_ratio:
+                regime_conflicts.append(
+                    f"Market regime filter: M15 efficiency ratio ({m15_er:.2f}) is below minimum threshold ({self.config.min_efficiency_ratio:.2f}). Market is choppy whipsaw."
+                )
+
         warnings = [
             "Analysis uses completed candles only; the latest row was excluded "
             "from each timeframe." if exclude_latest else
@@ -146,22 +236,24 @@ class IntradaySignalEngine:
         if timeframe_alignment_warning:
             warnings.append(timeframe_alignment_warning)
 
-        aligned = (
+        raw_aligned = (
             trend_direction in ("LONG", "SHORT")
             and setup_direction == trend_direction
             and trigger_direction == trend_direction
         )
 
-        if aligned:
+        spread_to_risk = 0.0
+        confluence_breakdown: Dict[str, Any] = {}
+
+        if raw_aligned and not session_conflicts and not regime_conflicts:
             direction = trend_direction
-            action = f"{direction}_SETUP"
-            status = "SETUP"
-            confluence_score = 100.0
             entry, stop, tp1, tp2, risk = self._build_risk_plan(
                 direction=direction,
                 m5=m5_ind,
                 m15_last=m15_last,
                 digits=digits,
+                stop_atr_multiplier=profile.stop_atr_multiplier,
+                max_stop_atr=profile.max_stop_atr,
             )
 
             if risk is None:
@@ -171,17 +263,68 @@ class IntradaySignalEngine:
                 confluence_score = 0.0
                 warnings.append(
                     "Risk plan rejected: stop distance was invalid or exceeded "
-                    f"{self.MAX_STOP_ATR:.1f} x M15 ATR."
+                    f"{profile.max_stop_atr:.1f} x M15 ATR."
                 )
                 entry = stop = tp1 = tp2 = risk = None
+            else:
+                # Spread filter
+                bar_spread = self._safe_float(m5_last.get("spread", 0.0))
+                spread_price = max(0.0, bar_spread) * effective_point
+                spread_to_risk = spread_price / risk if risk > 0 else 0.0
+
+                if (
+                    self.config.enable_spread_filter
+                    and spread_price > 0
+                    and spread_to_risk > profile.max_spread_to_risk
+                ):
+                    conflicts.append(
+                        f"Spread-to-risk ratio ({spread_to_risk:.3f}) exceeds maximum allowed ({profile.max_spread_to_risk:.3f})."
+                    )
+                    action = "NO_TRADE"
+                    direction = "NONE"
+                    status = "NO_TRADE"
+                    confluence_score = 0.0
+                    entry = stop = tp1 = tp2 = risk = None
+                else:
+                    # Graded confluence score
+                    confluence_score, confluence_breakdown = self._calculate_confluence_score(
+                        direction=direction,
+                        h1_ind=h1_ind,
+                        h1_last=h1_last,
+                        m15_ind=m15_ind,
+                        m15_last=m15_last,
+                        m5_last=m5_last,
+                        profile=profile,
+                        session_name=session_name,
+                        m5_body_ratio=m5_body_ratio,
+                        spread_to_risk=spread_to_risk,
+                    )
+
+                    if confluence_score < self.config.min_confluence_score:
+                        conflicts.append(
+                            f"Confluence score ({confluence_score:.1f}) is below minimum threshold ({self.config.min_confluence_score:.1f})."
+                        )
+                        action = "NO_TRADE"
+                        direction = "NONE"
+                        status = "NO_TRADE"
+                        entry = stop = tp1 = tp2 = risk = None
+                    else:
+                        action = f"{direction}_SETUP"
+                        status = "SETUP"
         else:
             action = "NO_TRADE"
             direction = "NONE"
             status = "NO_TRADE"
             entry = stop = tp1 = tp2 = risk = None
-            confluence_score = self._partial_score(
-                trend_direction, setup_direction, trigger_direction
+            confluence_score = (
+                self._partial_score(trend_direction, setup_direction, trigger_direction)
+                if not (session_conflicts or regime_conflicts)
+                else 0.0
             )
+
+            conflicts.extend(session_conflicts)
+            conflicts.extend(regime_conflicts)
+
             if trend_direction == "NONE":
                 conflicts.append("H1 trend is mixed or not sufficiently established.")
             if setup_direction != trend_direction or trend_direction == "NONE":
@@ -220,6 +363,15 @@ class IntradaySignalEngine:
                 "rsi_14": self._safe_float(m5_last.get("rsi_14")),
                 "macd_hist": self._safe_float(m5_last.get("macd_hist")),
                 "atr_14": self._safe_float(m5_last.get("atr_14")),
+            },
+            "regime_and_microstructure": {
+                "session": session_name,
+                "m15_efficiency_ratio": round(m15_er, 3),
+                "m15_atr_percentile": round(m15_atr_pct, 1),
+                "m5_body_ratio": m5_body_ratio,
+                "spread_to_risk_ratio": round(spread_to_risk, 4),
+                "confluence_breakdown": confluence_breakdown,
+                "profile_symbol": profile.symbol,
             },
         }
 
@@ -428,6 +580,7 @@ class IntradaySignalEngine:
     def _classify_m15_setup(
         cls,
         frame: pd.DataFrame,
+        profile: Optional[InstrumentProfile] = None,
     ) -> Tuple[str, List[str], List[str]]:
         last = frame.iloc[-1]
         close = cls._safe_float(last.get("close"))
@@ -440,13 +593,16 @@ class IntradaySignalEngine:
         if not all(np.isfinite(value) for value in values):
             return "NONE", [], ["M15 setup indicators are not fully warmed up."]
 
-        if close > ema20 > ema50 and 50.0 < rsi < 68.0 and macd_hist > 0:
+        rsi_long_min, rsi_long_max = profile.m15_rsi_long if profile else (50.0, 68.0)
+        rsi_short_min, rsi_short_max = profile.m15_rsi_short if profile else (32.0, 50.0)
+
+        if close > ema20 > ema50 and rsi_long_min < rsi < rsi_long_max and macd_hist > 0:
             return "LONG", [
                 "M15 bullish setup: price > EMA20 > EMA50.",
                 f"M15 RSI is constructive at {rsi:.1f} and MACD histogram is positive.",
             ], []
 
-        if close < ema20 < ema50 and 32.0 < rsi < 50.0 and macd_hist < 0:
+        if close < ema20 < ema50 and rsi_short_min < rsi < rsi_short_max and macd_hist < 0:
             return "SHORT", [
                 "M15 bearish setup: price < EMA20 < EMA50.",
                 f"M15 RSI is constructive for a short at {rsi:.1f} and MACD histogram is negative.",
@@ -455,9 +611,9 @@ class IntradaySignalEngine:
         conflicts = [
             "M15 trend structure, RSI range and MACD momentum are not aligned."
         ]
-        if rsi >= 68.0:
+        if rsi >= rsi_long_max:
             conflicts.append("M15 RSI is extended above the long-entry filter.")
-        elif rsi <= 32.0:
+        elif rsi <= rsi_short_min:
             conflicts.append("M15 RSI is extended below the short-entry filter.")
         return "NONE", [], conflicts
 
@@ -466,6 +622,8 @@ class IntradaySignalEngine:
         cls,
         frame: pd.DataFrame,
         m15_last: pd.Series,
+        session_name: str = "",
+        block_asian_breakouts: bool = False,
     ) -> Tuple[str, List[str], List[str]]:
         if len(frame) < 4:
             return "NONE", [], ["M5 history is too short for the trigger lookback."]
@@ -495,7 +653,9 @@ class IntradaySignalEngine:
         bullish_candle = close > open_price
         bearish_candle = close < open_price
 
-        long_breakout = bullish_candle and close > prior_high
+        allow_breakout = not (block_asian_breakouts and session_name == "ASIAN")
+
+        long_breakout = allow_breakout and bullish_candle and close > prior_high
         long_reclaim = (
             bullish_candle
             and np.isfinite(previous_close)
@@ -503,7 +663,7 @@ class IntradaySignalEngine:
             and previous_close <= previous_ema20
             and close > ema20
         )
-        short_breakdown = bearish_candle and close < prior_low
+        short_breakdown = allow_breakout and bearish_candle and close < prior_low
         short_reject = (
             bearish_candle
             and np.isfinite(previous_close)
@@ -553,6 +713,8 @@ class IntradaySignalEngine:
         m5: pd.DataFrame,
         m15_last: pd.Series,
         digits: Optional[int],
+        stop_atr_multiplier: float = 1.5,
+        max_stop_atr: float = 3.0,
     ) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float], Optional[float]]:
         entry = float(m5.iloc[-1]["close"])
         atr15 = cls._safe_float(m15_last.get("atr_14"))
@@ -564,19 +726,19 @@ class IntradaySignalEngine:
 
         if direction == "LONG":
             swing_stop = float(swing["low"].min()) - buffer
-            atr_stop = entry - atr15 * cls.STOP_ATR_MULTIPLIER
+            atr_stop = entry - atr15 * stop_atr_multiplier
             stop = min(swing_stop, atr_stop)
             risk = entry - stop
-            if risk <= 0 or risk > atr15 * cls.MAX_STOP_ATR:
+            if risk <= 0 or risk > atr15 * max_stop_atr:
                 return None, None, None, None, None
             tp1 = entry + risk * cls.TARGET_R_MULTIPLES[0]
             tp2 = entry + risk * cls.TARGET_R_MULTIPLES[1]
         elif direction == "SHORT":
             swing_stop = float(swing["high"].max()) + buffer
-            atr_stop = entry + atr15 * cls.STOP_ATR_MULTIPLIER
+            atr_stop = entry + atr15 * stop_atr_multiplier
             stop = max(swing_stop, atr_stop)
             risk = stop - entry
-            if risk <= 0 or risk > atr15 * cls.MAX_STOP_ATR:
+            if risk <= 0 or risk > atr15 * max_stop_atr:
                 return None, None, None, None, None
             tp1 = entry - risk * cls.TARGET_R_MULTIPLES[0]
             tp2 = entry - risk * cls.TARGET_R_MULTIPLES[1]
@@ -584,6 +746,88 @@ class IntradaySignalEngine:
             return None, None, None, None, None
 
         return entry, stop, tp1, tp2, risk
+
+    def _calculate_confluence_score(
+        self,
+        direction: str,
+        h1_ind: pd.DataFrame,
+        h1_last: pd.Series,
+        m15_ind: pd.DataFrame,
+        m15_last: pd.Series,
+        m5_last: pd.Series,
+        profile: InstrumentProfile,
+        session_name: str,
+        m5_body_ratio: float,
+        spread_to_risk: float,
+    ) -> Tuple[float, Dict[str, float]]:
+        """Compute graded confluence score (60.0 to 100.0) based on multi-timeframe alignment."""
+        # 1. H1 Trend Strength (up to 30 pts)
+        base_h1 = 20.0
+        ema_diff = abs(float(h1_last.get("ema_50", 0.0)) - float(h1_last.get("ema_200", 0.0)))
+        h1_atr = (
+            float(h1_ind["atr_14"].iloc[-1])
+            if ("atr_14" in h1_ind.columns and pd.notna(h1_ind["atr_14"].iloc[-1]) and float(h1_ind["atr_14"].iloc[-1]) > 0)
+            else float((h1_ind["high"] - h1_ind["low"]).tail(14).mean())
+        )
+        h1_atr = max(1e-6, h1_atr)
+        sep_score = min(5.0, (ema_diff / (h1_atr * 2.0)) * 5.0)
+        slope_5 = abs(float(h1_ind["ema_50"].iloc[-1] - h1_ind["ema_50"].iloc[-6])) if len(h1_ind) >= 6 else 0.0
+        slope_score = min(5.0, (slope_5 / (h1_atr * 0.5)) * 5.0)
+        h1_score = round(base_h1 + sep_score + slope_score, 1)
+
+        # 2. M15 Setup Quality (up to 30 pts)
+        base_m15 = 20.0
+        rsi_val = float(m15_last.get("rsi_14", 50.0))
+        if direction == "LONG":
+            sweet_rsi = (profile.m15_rsi_long[0] + profile.m15_rsi_long[1]) / 2.0
+            half_span = max(1.0, (profile.m15_rsi_long[1] - profile.m15_rsi_long[0]) / 2.0)
+            rsi_bonus = max(0.0, 5.0 * (1.0 - abs(rsi_val - sweet_rsi) / half_span))
+        else:
+            sweet_rsi = (profile.m15_rsi_short[0] + profile.m15_rsi_short[1]) / 2.0
+            half_span = max(1.0, (profile.m15_rsi_short[1] - profile.m15_rsi_short[0]) / 2.0)
+            rsi_bonus = max(0.0, 5.0 * (1.0 - abs(rsi_val - sweet_rsi) / half_span))
+        macd_cur = abs(float(m15_last.get("macd_hist", 0.0)))
+        macd_prev = abs(float(m15_ind["macd_hist"].iloc[-2])) if len(m15_ind) > 1 else 0.0
+        macd_bonus = 5.0 if macd_cur >= macd_prev else 2.5
+        m15_score = round(base_m15 + rsi_bonus + macd_bonus, 1)
+
+        # 3. M5 Trigger Conviction (up to 25 pts)
+        base_m5 = 15.0
+        body_bonus = min(5.0, m5_body_ratio * 5.0)
+        m5_range = max(1e-12, float(m5_last.get("high", 0.0)) - float(m5_last.get("low", 0.0)))
+        if direction == "LONG":
+            extreme_dist = (float(m5_last.get("close", 0.0)) - float(m5_last.get("low", 0.0))) / m5_range
+        else:
+            extreme_dist = (float(m5_last.get("high", 0.0)) - float(m5_last.get("close", 0.0))) / m5_range
+        extreme_bonus = min(5.0, max(0.0, (extreme_dist - 0.5) * 10.0))
+        m5_score = round(base_m5 + body_bonus + extreme_bonus, 1)
+
+        # 4. Session & Spread Quality (up to 15 pts)
+        if session_name == "LONDON_NY_OVERLAP":
+            session_base = 15.0
+        elif session_name in ("LONDON", "NY_AFTERNOON"):
+            session_base = 12.0
+        elif session_name == "ASIAN":
+            session_base = 8.0
+        else:
+            session_base = 4.0
+
+        if spread_to_risk > 0:
+            spread_penalty = min(4.0, (spread_to_risk / profile.max_spread_to_risk) * 4.0)
+        else:
+            spread_penalty = 0.0
+        session_score = round(max(0.0, min(15.0, session_base - spread_penalty)), 1)
+
+        raw_sum = h1_score + m15_score + m5_score + session_score
+        total_score = round(max(self.config.min_confluence_score, min(100.0, raw_sum)), 1)
+        breakdown = {
+            "h1_score": h1_score,
+            "m15_score": m15_score,
+            "m5_score": m5_score,
+            "session_score": session_score,
+            "total": total_score,
+        }
+        return total_score, breakdown
 
     @staticmethod
     def _partial_score(trend: str, setup: str, trigger: str) -> float:

@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 
 from core.intraday_signal_engine import IntradaySignal, IntradaySignalEngine
+from core.market_regimes import IntradayStrategyConfig
 
 
 @dataclass
@@ -109,9 +110,14 @@ class BacktestResult:
 class IntradayBacktester:
     """Event-driven intraday backtester for H1/M15/M5 strategy."""
 
-    def __init__(self, config: Optional[BacktestConfig] = None):
+    def __init__(
+        self,
+        config: Optional[BacktestConfig] = None,
+        strategy_config: Optional[IntradayStrategyConfig] = None,
+    ):
         self.config = config or BacktestConfig()
-        self.engine = IntradaySignalEngine()
+        self.strategy_config = strategy_config or IntradayStrategyConfig()
+        self.engine = IntradaySignalEngine(config=self.strategy_config)
 
     @staticmethod
     def classify_session(dt: pd.Timestamp) -> str:
@@ -471,6 +477,7 @@ class IntradayBacktester:
                             symbol=self.config.symbol,
                             digits=self.config.digits,
                             exclude_latest=False,  # Slices are already closed completed candles
+                            point=self.config.point,
                         )
                         if sig.action in ("LONG_SETUP", "SHORT_SETUP"):
                             pending_signal = sig

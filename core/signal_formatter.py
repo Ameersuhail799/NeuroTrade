@@ -52,6 +52,17 @@ class SignalFormatter:
             lines.append(f"  Risk Distance: {intraday_meta.get('risk_distance', 'N/A')}")
             lines.append("")
 
+        regime_meta = record.inputs.get("regime_and_microstructure") if isinstance(record.inputs, dict) else None
+        if regime_meta:
+            lines.append("Market Regime & Microstructure:")
+            lines.append(f"  Trading Session: {regime_meta.get('session', 'N/A')}")
+            s_ratio = regime_meta.get("spread_to_risk_ratio")
+            s_str = f"{s_ratio:.2%}" if isinstance(s_ratio, (int, float)) else str(s_ratio)
+            lines.append(f"  Spread-to-Risk Ratio: {s_str}")
+            lines.append(f"  M15 Kaufman Efficiency: {regime_meta.get('m15_efficiency_ratio', 'N/A')}")
+            lines.append(f"  M15 ATR Percentile: {regime_meta.get('m15_atr_percentile', 'N/A')}%")
+            lines.append("")
+
         lines.append("Rule contributions / Setup reasons:")
         if record.reasons:
             for reason in record.reasons:
@@ -81,7 +92,7 @@ class SignalFormatter:
             lines.append("")
             lines.append("Decision inputs:")
             for name, value in record.inputs.items():
-                if name == "intraday_metadata":
+                if name in ("intraday_metadata", "regime_and_microstructure"):
                     continue
                 lines.append(f"  {name}: {value}")
 
