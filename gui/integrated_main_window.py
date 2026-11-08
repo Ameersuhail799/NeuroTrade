@@ -72,6 +72,11 @@ class IntegratedMainWindow(MainWindow):
             self._pause_live_chart_for_trading
         )
 
+        # Wire 1-click signal pre-fill to Trading panel for manual demo execution
+        self.signal_panel.setup_selected_for_trade.connect(
+            self._on_setup_selected_for_trade
+        )
+
         # Backtest panel performs MT5 work when syncing live data.
         self.backtest_panel.mt5_operation_requested.connect(
             self._pause_live_chart_for_trading
@@ -91,6 +96,19 @@ class IntegratedMainWindow(MainWindow):
             self.backtest_panel,
         ):
             self._pause_live_chart_for_trading()
+
+    def _on_setup_selected_for_trade(self, data: dict):
+        """
+        Pre-fill order ticket in Trading tab and activate Trading tab
+        for manual trader review. Strictly demo execution, no automated orders.
+        """
+        self.trading_panel.prefill_order_ticket(data)
+        self.tabs.setCurrentWidget(self.trading_panel)
+        symbol = data.get("symbol", "N/A")
+        side = str(data.get("side", "")).upper()
+        self.append_log(
+            f"Pre-filled trade setup for {symbol} ({side}) in Trading tab for manual review."
+        )
 
     def _mt5_guard_allowed(self) -> bool:
         """

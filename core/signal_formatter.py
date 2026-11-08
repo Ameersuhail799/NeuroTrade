@@ -63,6 +63,31 @@ class SignalFormatter:
             lines.append(f"  M15 ATR Percentile: {regime_meta.get('m15_atr_percentile', 'N/A')}%")
             lines.append("")
 
+        outcome_data = None
+        if isinstance(record.inputs, dict):
+            outcome_data = record.inputs.get("outcome")
+        if not outcome_data and hasattr(record, "outcome"):
+            outcome_data = getattr(record, "outcome")
+
+        if outcome_data:
+            lines.append("Signal Outcome & Forward Tracking:")
+            if isinstance(outcome_data, dict):
+                lines.append(f"  Status: {outcome_data.get('outcome', 'OPEN')}")
+                r_val = outcome_data.get('outcome_r')
+                if r_val is not None:
+                    lines.append(f"  Realized R: {float(r_val):+.2f}R")
+                lines.append(f"  Resolved At: {outcome_data.get('resolved_at', 'N/A')}")
+                h_bars = outcome_data.get('holding_bars')
+                if h_bars is not None:
+                    lines.append(f"  Holding Bars: {h_bars} ({int(h_bars) * 5} mins)")
+                if outcome_data.get("notes"):
+                    lines.append(f"  Notes: {outcome_data['notes']}")
+            else:
+                lines.append(f"  Status: {getattr(outcome_data, 'outcome', 'OPEN')}")
+                lines.append(f"  Realized R: {getattr(outcome_data, 'outcome_r', 0.0):+.2f}R")
+                lines.append(f"  Resolved At: {getattr(outcome_data, 'resolved_at', 'N/A')}")
+            lines.append("")
+
         lines.append("Rule contributions / Setup reasons:")
         if record.reasons:
             for reason in record.reasons:
@@ -129,5 +154,8 @@ class SignalFormatter:
         intraday_meta = record.inputs.get("intraday_metadata") if isinstance(record.inputs, dict) else None
         if intraday_meta:
             payload["intraday_mtf_plan"] = intraday_meta
+
+        if isinstance(record.inputs, dict) and "outcome" in record.inputs:
+            payload["outcome"] = record.inputs["outcome"]
 
         return json.dumps(payload, indent=2, ensure_ascii=True)

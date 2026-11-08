@@ -38,6 +38,7 @@ class SignalHistoryPanel(QWidget):
     """
 
     mt5_operation_requested = pyqtSignal()
+    setup_selected_for_trade = pyqtSignal(dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -133,7 +134,7 @@ class SignalHistoryPanel(QWidget):
         root_layout.addWidget(history_group)
 
         self.history_table = QTableWidget()
-        self.history_table.setColumnCount(8)
+        self.history_table.setColumnCount(9)
         self.history_table.setHorizontalHeaderLabels(
             [
                 "ID",
@@ -143,6 +144,7 @@ class SignalHistoryPanel(QWidget):
                 "Engine",
                 "Action",
                 "Confidence",
+                "Outcome",
                 "Decision Candle",
             ]
         )
@@ -165,8 +167,15 @@ class SignalHistoryPanel(QWidget):
         root_layout.addWidget(self.history_table, stretch=1)
 
         # Copy actions
-        copy_group = QGroupBox("Copy Actions")
+        copy_group = QGroupBox("Copy & Pre-fill Actions")
         copy_layout = QHBoxLayout(copy_group)
+
+        self.prefill_trade_button = QPushButton("Pre-fill in Trading Panel")
+        self.prefill_trade_button.setStyleSheet(
+            "background-color: #2e7d32; color: #ffffff; font-weight: bold;"
+        )
+        self.prefill_trade_button.clicked.connect(self._prefill_in_trading_panel)
+        copy_layout.addWidget(self.prefill_trade_button)
 
         self.copy_selected_button = QPushButton("Copy Selected Report")
         self.copy_selected_button.clicked.connect(self._copy_selected_text)
@@ -222,6 +231,7 @@ class SignalHistoryPanel(QWidget):
             self.action_filter_combo,
             self.engine_filter_combo,
             self.refresh_filter_button,
+            self.prefill_trade_button,
             self.copy_selected_button,
             self.copy_json_button,
             self.copy_filtered_button,
@@ -340,11 +350,80 @@ class SignalHistoryPanel(QWidget):
             self.history_table.setItem(
                 row, 6, QTableWidgetItem(f"{record.confidence:.1f}")
             )
+
+            outcome_val = "--"
+            if isinstance(record.inputs, dict) and "outcome" in record.inputs:
+                out = record.inputs["outcome"]
+                if isinstance(out, dict):
+                    outcome_val = str(out.get("outcome", "--"))
+                else:
+                    outcome_val = str(getattr(out, "outcome", out))
+
             self.history_table.setItem(
-                row, 7, QTableWidgetItem(record.decision_time)
+                row, 7, QTableWidgetItem(outcome_val)
+            )
+            self.history_table.setItem(
+                row, 8, QTableWidgetItem(record.decision_time)
             )
 
         self.history_table.resizeColumnsToContents()
+
+    def _prefill_in_trading_panel(self):
+        record = self._current_selected_record()
+        if record is None:
+            self._log("Select a signal record first.")
+            return
+
+        if record.action not in ("LONG_SETUP", "SHORT_SETUP"):
+            self._log(
+                f"Signal #{record.record_id} ({record.action}) is not an actionable trade setup. "
+                "Only LONG_SETUP and SHORT_SETUP can be pre-filled."
+            )
+            return
+
+        intraday_meta = (
+            record.inputs.get("intraday_metadata", {})
+            if isinstance(record.inputs, dict)
+            else {}
+        )
+        entry_ref = intraday_meta.get("entry_reference")
+        stop_loss = intraday_meta.get("stop_loss")
+        tp1 = intraday_meta.get("take_profit_1")
+        direction = str(intraday_meta.get("direction", "")).lower()
+
+        side = "buy" if (record.action == "LONG_SETUP" or "long" in direction) else "sell"
+
+        from core.market_regimes import InstrumentProfile
+        profile = InstrumentProfile.for_symbol(record.symbol)
+        point = profile.default_point if profile else 0.01
+
+        if entry_ref is not None and stop_loss is not None:
+            sl_points = max(10, int(round(abs(float(entry_ref) - float(stop_loss)) / point)))
+        else:
+            sl_points = 300
+
+        if entry_ref is not None and tp1 is not None:
+            tp_points = max(10, int(round(abs(float(tp1) - float(entry_ref)) / point)))
+        else:
+            tp_points = 600
+
+        payload = {
+            "symbol": record.symbol,
+            "side": side,
+            "sl_points": sl_points,
+            "tp_points": tp_points,
+            "entry_reference": entry_ref,
+            "stop_loss": stop_loss,
+            "take_profit_1": tp1,
+            "risk_pct": 1.0,
+            "confluence_score": float(record.confidence),
+        }
+
+        self._log(
+            f"Pre-filling order ticket: {record.symbol} {side.upper()} "
+            f"SL={sl_points} pts | TP={tp_points} pts..."
+        )
+        self.setup_selected_for_trade.emit(payload)
 
     def _current_selected_record(self):
         rows = self.history_table.selectionModel().selectedRows()

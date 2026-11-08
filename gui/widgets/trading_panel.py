@@ -334,6 +334,36 @@ class TradingPanel(QWidget):
 
         self._set_controls_enabled(self._enabled)
 
+    def prefill_order_ticket(self, data: dict):
+        """
+        Pre-fill order controls from a signal setup for manual review and demo execution.
+        Strictly no automated order placement.
+        """
+        symbol = data.get("symbol")
+        if symbol:
+            idx = self.symbol_combo.findText(symbol)
+            if idx >= 0:
+                self.symbol_combo.setCurrentIndex(idx)
+
+        sl_points = data.get("sl_points")
+        if sl_points is not None:
+            self.sl_spin.setValue(max(0, int(sl_points)))
+
+        tp_points = data.get("tp_points")
+        if tp_points is not None:
+            self.tp_spin.setValue(max(0, int(tp_points)))
+
+        volume = data.get("volume")
+        if volume is not None and float(volume) > 0.0:
+            self.volume_spin.setValue(float(volume))
+
+        side = str(data.get("side", "")).upper()
+        self._append_output(
+            f"Pre-filled ticket from signal: {symbol} {side} "
+            f"| SL={self.sl_spin.value()} pts | TP={self.tp_spin.value()} pts | Vol={self.volume_spin.value():.2f}. "
+            f"Carefully review parameters and click 'Open Demo {side.capitalize() if side else 'Position'}' to manually submit."
+        )
+
     def _on_execution_ready(self, result):
         self._append_output(result.message)
 
