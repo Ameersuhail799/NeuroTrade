@@ -114,30 +114,85 @@ class CandleStore:
         self,
         symbol: str,
         timeframe: str,
-        limit: int = 500,
+        limit: Optional[int] = 500,
     ) -> pd.DataFrame:
-        """Load the newest candles, returned oldest first."""
+        """Load the newest candles, returned oldest first. If limit is None, loads all."""
         if self.conn is None:
             raise RuntimeError("CandleStore is not connected.")
 
-        if limit < 1:
-            raise ValueError("limit must be >= 1.")
+        if limit is not None and limit < 1:
+            raise ValueError("limit must be >= 1 if specified.")
 
-        query = """
-            SELECT open_time, open, high, low, close, tick_volume, spread
-            FROM (
-                SELECT * FROM candles
+        if limit is not None:
+            query = """
+                SELECT open_time, open, high, low, close, tick_volume, spread
+                FROM (
+                    SELECT * FROM candles
+                    WHERE symbol = ? AND timeframe = ?
+                    ORDER BY open_time DESC
+                    LIMIT ?
+                )
+                ORDER BY open_time ASC
+            """
+            params = (symbol, timeframe, int(limit))
+        else:
+            query = """
+                SELECT open_time, open, high, low, close, tick_volume, spread
+                FROM candles
                 WHERE symbol = ? AND timeframe = ?
-                ORDER BY open_time DESC
-                LIMIT ?
+                ORDER BY open_time ASC
+            """
+            params = (symbol, timeframe)
+
+        df = pd.read_sql_query(
+            query,
+            self.conn,
+            params=params,
+        )
+
+        if df.empty:
+            return pd.DataFrame(
+                columns=[
+                    "time", "open", "high", "low", "close", "tick_volume", "spread"
+                ]
             )
+
+        df["time"] = pd.to_datetime(df.pop("open_time"), unit="s")
+        return df
+
+    def load_candles_range(
+        self,
+        symbol: str,
+        timeframe: str,
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+    ) -> pd.DataFrame:
+        """Load candles within [start_time, end_time] (Unix epoch seconds), ordered oldest first."""
+        if self.conn is None:
+            raise RuntimeError("CandleStore is not connected.")
+
+        clauses = ["symbol = ?", "timeframe = ?"]
+        params = [symbol, timeframe]
+
+        if start_time is not None:
+            clauses.append("open_time >= ?")
+            params.append(int(start_time))
+        if end_time is not None:
+            clauses.append("open_time <= ?")
+            params.append(int(end_time))
+
+        where_clause = " AND ".join(clauses)
+        query = f"""
+            SELECT open_time, open, high, low, close, tick_volume, spread
+            FROM candles
+            WHERE {where_clause}
             ORDER BY open_time ASC
         """
 
         df = pd.read_sql_query(
             query,
             self.conn,
-            params=(symbol, timeframe, int(limit)),
+            params=tuple(params),
         )
 
         if df.empty:
