@@ -15,6 +15,7 @@ import pandas as pd
 from core.csv_loader import CSVDataLoader
 from core.data_store import CandleStore
 from core.intraday_backtester import BacktestConfig, IntradayBacktester
+from core.walk_forward_validator import WalkForwardConfig, WalkForwardValidator
 
 
 def parse_args():
@@ -87,6 +88,16 @@ def parse_args():
         "--no-scale-out",
         action="store_true",
         help="Disable 50%% scale-out at TP1 (exit 100%% at TP1).",
+    )
+    parser.add_argument(
+        "--ablation",
+        action="store_true",
+        help="Run 5-stage filter ablation study comparing Baseline v1 vs full v2 gates.",
+    )
+    parser.add_argument(
+        "--walk-forward",
+        action="store_true",
+        help="Run purged & embargoed rolling walk-forward validation (4 folds).",
     )
     parser.add_argument(
         "--max-hold-bars",
@@ -169,6 +180,32 @@ def main():
         scale_out_tp1=not args.no_scale_out,
         max_hold_m5_bars=args.max_hold_bars,
     )
+
+    if args.ablation:
+        print("Executing 5-stage strategy ablation study...")
+        rows = WalkForwardValidator.run_ablation_study(
+            h1=h1,
+            m15=m15,
+            m5=m5,
+            symbol=args.symbol,
+            backtest_config=cfg,
+        )
+        report = WalkForwardValidator.format_ablation_report(rows)
+        print("\n" + report)
+        return
+
+    if getattr(args, "walk_forward", False):
+        print("Executing rolling purged walk-forward validation (4 folds)...")
+        summary = WalkForwardValidator.run_walk_forward(
+            h1=h1,
+            m15=m15,
+            m5=m5,
+            symbol=args.symbol,
+            backtest_config=cfg,
+        )
+        report = WalkForwardValidator.format_walk_forward_report(summary)
+        print("\n" + report)
+        return
 
     backtester = IntradayBacktester(config=cfg)
     result = backtester.run(h1, m15, m5)

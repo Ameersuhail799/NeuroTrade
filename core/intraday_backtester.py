@@ -139,6 +139,8 @@ class IntradayBacktester:
         h1: pd.DataFrame,
         m15: pd.DataFrame,
         m5: pd.DataFrame,
+        eval_start_time: Optional[Union[pd.Timestamp, str]] = None,
+        eval_end_time: Optional[Union[pd.Timestamp, str]] = None,
     ) -> BacktestResult:
         """Run the causal backtest across the provided candle datasets."""
         # Ensure chronological ordering and datetime index/column
@@ -149,6 +151,9 @@ class IntradayBacktester:
         h1["time"] = pd.to_datetime(h1["time"])
         m15["time"] = pd.to_datetime(m15["time"])
         m5["time"] = pd.to_datetime(m5["time"])
+
+        eval_start_ts = pd.to_datetime(eval_start_time) if eval_start_time is not None else None
+        eval_end_ts = pd.to_datetime(eval_end_time) if eval_end_time is not None else None
 
         # Precompute candle completion times (time = open timestamp)
         h1_close_times = (h1["time"] + pd.Timedelta(hours=1)).values
@@ -451,7 +456,12 @@ class IntradayBacktester:
             # -------------------------------------------------------------
             # 3. EVALUATE SIGNAL AT COMPLETED M5 BAR CLOSE (if no active trade)
             # -------------------------------------------------------------
-            if open_trade is None and pending_signal is None and i < m5_len - 1:
+            in_eval_window = (
+                (eval_start_ts is None or bar_time >= eval_start_ts)
+                and (eval_end_ts is None or bar_time <= eval_end_ts)
+            )
+
+            if open_trade is None and pending_signal is None and i < m5_len - 1 and in_eval_window:
                 cur_m5_close_dt = m5_close_times.iloc[i]
                 cur_m5_close_val = cur_m5_close_dt.to_datetime64()
 
@@ -556,14 +566,32 @@ class IntradayBacktester:
                 "net_profit": s_pnl,
             }
 
-        start_time = m5.iloc[0]["time"] if len(m5) > 0 else None
-        end_time = m5.iloc[-1]["time"] if len(m5) > 0 else None
+        start_time = (
+            eval_start_ts
+            if eval_start_ts is not None
+            else (m5.iloc[0]["time"] if len(m5) > 0 else None)
+        )
+        end_time = (
+            eval_end_ts
+            if eval_end_ts is not None
+            else (m5.iloc[-1]["time"] if len(m5) > 0 else None)
+        )
+        eval_bars = (
+            int(
+                (
+                    (m5["time"] >= eval_start_ts if eval_start_ts is not None else True)
+                    & (m5["time"] <= eval_end_ts if eval_end_ts is not None else True)
+                ).sum()
+            )
+            if (eval_start_ts is not None or eval_end_ts is not None)
+            else m5_len
+        )
 
         return BacktestResult(
             config=self.config,
             start_time=start_time,
             end_time=end_time,
-            total_bars_m5=m5_len,
+            total_bars_m5=eval_bars,
             total_trades=total_trades,
             long_trades=long_trades,
             short_trades=short_trades,

@@ -15,6 +15,7 @@ from gui.widgets.persistent_trading_panel import PersistentTradingPanel
 from gui.widgets.feedback_panel import FeedbackPanel
 from gui.widgets.performance_panel import PerformancePanel
 from gui.widgets.persistent_signal_panel import PersistentSignalHistoryPanel
+from gui.widgets.backtest_panel import BacktestPanel
 
 
 class IntegratedMainWindow(MainWindow):
@@ -40,11 +41,15 @@ class IntegratedMainWindow(MainWindow):
         # Part 9 + Part 10 persistence
         self.signal_panel = PersistentSignalHistoryPanel()
 
+        # Level 5 Backtest & Validation Panel
+        self.backtest_panel = BacktestPanel()
+
         # Add integrated tabs.
         self.tabs.addTab(self.trading_panel, "Trading")
         self.tabs.addTab(self.feedback_panel, "Feedback")
         self.tabs.addTab(self.performance_panel, "Performance")
         self.tabs.addTab(self.signal_panel, "Signals")
+        self.tabs.addTab(self.backtest_panel, "Backtest")
 
         # MT5 coordination for the trading panel.
         self.trading_panel.set_mt5_guard(self._mt5_guard_allowed)
@@ -67,6 +72,11 @@ class IntegratedMainWindow(MainWindow):
             self._pause_live_chart_for_trading
         )
 
+        # Backtest panel performs MT5 work when syncing live data.
+        self.backtest_panel.mt5_operation_requested.connect(
+            self._pause_live_chart_for_trading
+        )
+
         # Pause live chart when entering MT5-heavy tabs.
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
@@ -78,6 +88,7 @@ class IntegratedMainWindow(MainWindow):
             self.feedback_panel,
             self.performance_panel,
             self.signal_panel,
+            self.backtest_panel,
         ):
             self._pause_live_chart_for_trading()
 
@@ -104,6 +115,9 @@ class IntegratedMainWindow(MainWindow):
             return False
 
         if self.signal_panel.is_worker_running():
+            return False
+
+        if self.backtest_panel.is_worker_running():
             return False
 
         return True
@@ -138,6 +152,7 @@ class IntegratedMainWindow(MainWindow):
         self.feedback_panel.set_enabled(True)
         self.performance_panel.set_enabled(True)
         self.signal_panel.set_enabled(True)
+        self.backtest_panel.set_enabled(True)
 
     def closeEvent(self, event):
         """
@@ -147,6 +162,7 @@ class IntegratedMainWindow(MainWindow):
         self.feedback_panel.wait_for_worker(3000)
         self.performance_panel.wait_for_worker(3000)
         self.signal_panel.wait_for_worker(3000)
+        self.backtest_panel.wait_for_worker(3000)
 
         self.signal_panel.close_store()
 
