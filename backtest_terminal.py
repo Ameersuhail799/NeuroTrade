@@ -157,6 +157,10 @@ def main():
     args = parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
+    # Auto-detect CSV source if CSV paths are provided
+    if args.h1_csv and args.m15_csv and args.m5_csv and args.source == "sqlite":
+        args.source = "csv"
+
     print(f"Loading data for {args.symbol} from {args.source.upper()}...")
     try:
         if args.source == "sqlite":

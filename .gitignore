@@ -55,3 +55,5 @@ neurotrade_patch/
 # Keep folder structure
 !data/.gitkeep
 !data/models/.gitkeep
+data/samples/*.csv
+!data/samples/.gitkeep
