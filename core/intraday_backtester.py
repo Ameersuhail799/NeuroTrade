@@ -152,6 +152,11 @@ class IntradayBacktester:
         m15["time"] = pd.to_datetime(m15["time"])
         m5["time"] = pd.to_datetime(m5["time"])
 
+        for df in (h1, m15, m5):
+            for col in ("open", "high", "low", "close"):
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce").astype(float)
+
         eval_start_ts = pd.to_datetime(eval_start_time) if eval_start_time is not None else None
         eval_end_ts = pd.to_datetime(eval_end_time) if eval_end_time is not None else None
 
@@ -208,8 +213,8 @@ class IntradayBacktester:
                 pending_signal = None
                 pending_signal_bar_idx = None
 
-                direction = sig.direction  # 'BUY' / 'SELL'
-                if direction == "BUY":
+                direction = sig.direction.upper() if sig.direction else ""  # 'BUY'/'LONG' or 'SELL'/'SHORT'
+                if direction in ("BUY", "LONG"):
                     entry_fill = bar_open + spread_val + slip_val
                     init_stop = float(sig.stop_loss)
                     tp1 = float(sig.take_profit_1)
@@ -248,7 +253,7 @@ class IntradayBacktester:
                             market_regime=sig.market_regime,
                         )
 
-                elif direction == "SELL":
+                elif direction in ("SELL", "SHORT"):
                     entry_fill = bar_open - slip_val
                     init_stop = float(sig.stop_loss)
                     tp1 = float(sig.take_profit_1)
@@ -474,10 +479,14 @@ class IntradayBacktester:
                     and m15_idx >= min_m15_req - 1
                     and i >= min_m5_req - 1
                 ):
-                    # Slices of completed candles up to causal boundary
-                    h1_slice = h1.iloc[max(0, h1_idx - 250 + 1) : h1_idx + 1]
-                    m15_slice = m15.iloc[max(0, m15_idx - 80 + 1) : m15_idx + 1]
-                    m5_slice = m5.iloc[max(0, i - 80 + 1) : i + 1]
+                    # Slices of completed candles up to causal boundary, capped for fast evaluation
+                    h1_end = h1_idx + 1
+                    m15_end = m15_idx + 1
+                    m5_end = i + 1
+
+                    h1_slice = h1.iloc[max(0, h1_end - 250) : h1_end]
+                    m15_slice = m15.iloc[max(0, m15_end - 120) : m15_end]
+                    m5_slice = m5.iloc[max(0, m5_end - 120) : m5_end]
 
                     try:
                         sig = self.engine.generate_signal(

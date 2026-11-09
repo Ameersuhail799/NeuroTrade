@@ -513,7 +513,10 @@ class IntradaySignalEngine:
             raise ValueError(f"{label} candles contain invalid OHLC ranges.")
 
         if "time" in work.columns:
-            timestamps = pd.to_datetime(work["time"], errors="coerce")
+            if pd.api.types.is_datetime64_any_dtype(work["time"]):
+                timestamps = work["time"]
+            else:
+                timestamps = pd.to_datetime(work["time"], errors="coerce")
             if timestamps.isna().any():
                 raise ValueError(f"{label} candles contain invalid timestamps.")
             if timestamps.duplicated().any() or not timestamps.is_monotonic_increasing:
