@@ -160,6 +160,15 @@ class CandleStore:
         df["time"] = pd.to_datetime(df.pop("open_time"), unit="s")
         return df
 
+    def load(
+        self,
+        symbol: str,
+        timeframe: str,
+        limit: Optional[int] = 500,
+    ) -> pd.DataFrame:
+        """Alias for load_candles."""
+        return self.load_candles(symbol=symbol, timeframe=timeframe, limit=limit)
+
     def load_candles_range(
         self,
         symbol: str,
