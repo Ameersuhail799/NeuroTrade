@@ -17,6 +17,7 @@ from core.indicators import IndicatorEngine
 from core.weight_store import WeightStore
 from core.feedback_engine import FeedbackEngine
 from core.rule_features import DEFAULT_WEIGHTS
+from core.web_market_data import WebMarketDataProvider
 
 
 class FeedbackWorker(QThread):
@@ -68,39 +69,51 @@ class FeedbackWorker(QThread):
 
             if mode == "sync":
                 if not MT5Connector.initialize():
-                    self.error.emit(
-                        "MT5 initialization failed. "
-                        "Ensure MT5 is running and logged into a DEMO account."
+                    try:
+                        sync_res = WebMarketDataProvider.sync_to_sqlite(
+                            symbol,
+                            candle_store,
+                            weight_store=weight_store,
+                            requested_bars=bars,
+                            timeframe=timeframe,
+                        )
+                        resolved_symbol = sync_res["symbol"]
+                        point = float(sync_res["point"])
+                        digits = int(sync_res["digits"])
+                        raw = sync_res["data"]
+                    except Exception as exc:
+                        self.error.emit(
+                            f"MT5 initialization failed and Web market fallback failed: {exc}"
+                        )
+                        return
+                else:
+                    mt5_started = True
+
+                    symbol_info = MT5Connector.get_symbol_info(symbol)
+                    if not symbol_info:
+                        self.error.emit(f"Could not resolve symbol {symbol}.")
+                        return
+
+                    resolved_symbol = symbol_info.name
+                    point = float(symbol_info.point)
+                    digits = int(symbol_info.digits)
+
+                    if point <= 0.0:
+                        self.error.emit(f"Invalid point value for {resolved_symbol}.")
+                        return
+
+                    weight_store.save_contract(symbol, resolved_symbol, point, digits)
+                    weight_store.save_contract(
+                        resolved_symbol, resolved_symbol, point, digits
                     )
-                    return
 
-                mt5_started = True
+                    engine = DataEngine(
+                        symbol=resolved_symbol,
+                        timeframe=timeframe,
+                        store=candle_store,
+                    )
 
-                symbol_info = MT5Connector.get_symbol_info(symbol)
-                if not symbol_info:
-                    self.error.emit(f"Could not resolve symbol {symbol}.")
-                    return
-
-                resolved_symbol = symbol_info.name
-                point = float(symbol_info.point)
-                digits = int(symbol_info.digits)
-
-                if point <= 0.0:
-                    self.error.emit(f"Invalid point value for {resolved_symbol}.")
-                    return
-
-                weight_store.save_contract(symbol, resolved_symbol, point, digits)
-                weight_store.save_contract(
-                    resolved_symbol, resolved_symbol, point, digits
-                )
-
-                engine = DataEngine(
-                    symbol=resolved_symbol,
-                    timeframe=timeframe,
-                    store=candle_store,
-                )
-
-                raw = engine.sync_recent(limit=bars)
+                    raw = engine.sync_recent(limit=bars)
 
             else:
                 contract = weight_store.load_contract(symbol)
@@ -132,11 +145,14 @@ class FeedbackWorker(QThread):
                         )
 
                     else:
-                        self.error.emit(
-                            "No stored contract info for this symbol. "
-                            "Run Sync MT5 Data once while MT5 is open."
+                        spec = WebMarketDataProvider.get_symbol_spec(symbol)
+                        resolved_symbol = spec["resolved_symbol"]
+                        point = float(spec["point"])
+                        digits = int(spec["digits"])
+                        weight_store.save_contract(symbol, resolved_symbol, point, digits)
+                        weight_store.save_contract(
+                            resolved_symbol, resolved_symbol, point, digits
                         )
-                        return
 
                 else:
                     resolved_symbol = contract["resolved_symbol"]

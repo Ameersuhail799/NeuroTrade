@@ -10,6 +10,7 @@ from core.mt5_connector import MT5Connector
 from core.data_store import CandleStore
 from core.data_engine import DataEngine
 from core.indicators import IndicatorEngine
+from core.web_market_data import WebMarketDataProvider
 
 
 class DataWorker(QThread):
@@ -65,19 +66,35 @@ class DataWorker(QThread):
             else:
                 self.log.emit("Initializing MT5 for history sync...")
                 if not MT5Connector.initialize():
-                    self.error.emit(
-                        "MT5 initialization failed. "
-                        "Ensure MT5 is running and logged into a DEMO account."
-                    )
-                    return
-                mt5_started = True
+                    self.log.emit("MT5 unavailable. Falling back to Live Web Market Feed...")
+                    try:
+                        sync_res = WebMarketDataProvider.sync_to_sqlite(
+                            self.symbol,
+                            store,
+                            requested_bars=self.limit,
+                            timeframe=self.timeframe,
+                        )
+                        raw = sync_res["data"]
+                        source = "Web Feed (Live)"
+                        rows_written = sync_res["bars"]
+                        engine.resolved_symbol = sync_res["symbol"]
+                        engine.digits = sync_res["digits"]
+                    except Exception as exc:
+                        self.error.emit(
+                            f"MT5 initialization failed and Web fallback failed: {exc}"
+                        )
+                        return
+                else:
+                    mt5_started = True
 
-                self.log.emit(f"Downloading up to {self.limit} candles from MT5...")
-                raw = engine.sync_recent(self.limit)
-                source = "MT5"
-                rows_written = len(raw)
+                    self.log.emit(f"Downloading up to {self.limit} candles from MT5...")
+                    raw = engine.sync_recent(self.limit)
+                    source = "MT5"
+                    rows_written = len(raw)
 
-            resolved = engine.resolved_symbol or self.symbol
+            spec = WebMarketDataProvider.get_symbol_spec(self.symbol)
+            resolved = engine.resolved_symbol or spec["resolved_symbol"]
+            digits = engine.digits if engine.digits > 0 and engine.resolved_symbol else spec["digits"]
 
             self.log.emit("Calculating SMA/EMA/RSI/ATR/MACD/Bollinger (pandas/numpy)...")
             enriched = IndicatorEngine.add_indicators(raw)
@@ -92,7 +109,7 @@ class DataWorker(QThread):
                 "rows": int(len(enriched)),
                 "rows_written": int(rows_written),
                 "stored_rows": int(stored_count),
-                "digits": int(engine.digits),
+                "digits": int(digits),
                 "first_time": str(enriched["time"].iloc[0]),
                 "last_time": str(enriched["time"].iloc[-1]),
                 "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

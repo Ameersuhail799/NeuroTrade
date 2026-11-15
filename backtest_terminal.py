@@ -24,9 +24,9 @@ def parse_args():
     )
     parser.add_argument(
         "--source",
-        choices=["sqlite", "csv"],
+        choices=["sqlite", "csv", "web"],
         default="sqlite",
-        help="Data source: 'sqlite' (local CandleStore) or 'csv' (external files).",
+        help="Data source: 'sqlite' (local CandleStore), 'csv' (external files), or 'web' (live/historical Yahoo Finance feed).",
     )
     parser.add_argument(
         "--symbol",
@@ -141,6 +141,30 @@ def load_from_sqlite(symbol: str, m5_bars: int):
         store.close()
 
 
+def load_from_web(symbol: str, m5_bars: int):
+    store = CandleStore()
+    if not store.connect():
+        raise RuntimeError("Could not connect to CandleStore database.")
+
+    try:
+        from core.weight_store import WeightStore
+        from core.web_market_data import WebMarketDataProvider
+
+        weight_store = WeightStore()
+        weight_store.connect()
+        try:
+            print(f"Syncing live web market data for {symbol} into SQLite...")
+            WebMarketDataProvider.sync_to_sqlite(
+                symbol, store, weight_store=weight_store, requested_bars=m5_bars
+            )
+        finally:
+            weight_store.close()
+
+        return load_from_sqlite(symbol, m5_bars)
+    finally:
+        store.close()
+
+
 def load_from_csv(h1_path: str, m15_path: str, m5_path: str):
     if not (h1_path and m15_path and m5_path):
         raise ValueError(
@@ -165,6 +189,8 @@ def main():
     try:
         if args.source == "sqlite":
             h1, m15, m5 = load_from_sqlite(args.symbol, args.bars)
+        elif args.source == "web":
+            h1, m15, m5 = load_from_web(args.symbol, args.bars)
         else:
             h1, m15, m5 = load_from_csv(args.h1_csv, args.m15_csv, args.m5_csv)
     except Exception as exc:

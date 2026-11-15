@@ -23,6 +23,7 @@ from core.rule_features import DEFAULT_WEIGHTS
 from core.signal_history import SignalRecord
 from core.multi_timeframe_data import MultiTimeframeDataCoordinator
 from core.intraday_signal_engine import IntradaySignalEngine
+from core.web_market_data import WebMarketDataProvider
 
 
 class SignalWorker(QThread):
@@ -62,47 +63,24 @@ class SignalWorker(QThread):
             if engine_name == "intraday_mtf":
                 if mode == "sync":
                     if not MT5Connector.initialize():
-                        self.error.emit(
-                            "MT5 initialization failed. "
-                            "Ensure MT5 is running and logged into a DEMO account."
-                        )
-                        return
-
-                    mt5_started = True
-
-                    symbol_info = MT5Connector.get_symbol_info(symbol)
-                    if not symbol_info:
-                        self.error.emit(f"Could not resolve symbol {symbol}.")
-                        return
-
-                    resolved_symbol = symbol_info.name
-                    point = float(symbol_info.point)
-                    digits = int(symbol_info.digits)
-
-                    if point <= 0.0:
-                        self.error.emit(f"Invalid point value for {resolved_symbol}.")
-                        return
-
-                    weight_store.save_contract(symbol, resolved_symbol, point, digits)
-                    weight_store.save_contract(
-                        resolved_symbol, resolved_symbol, point, digits
-                    )
-
-                    coord = MultiTimeframeDataCoordinator(
-                        symbol=resolved_symbol, store=candle_store
-                    )
-                    mtf_data = coord.sync_all(requested_bars=bars)
-                else:
-                    contract = weight_store.load_contract(symbol)
-
-                    if not contract:
-                        if not MT5Connector.initialize():
+                        # Automatic fallback to WebMarketDataProvider when MT5 is offline
+                        try:
+                            sync_res = WebMarketDataProvider.sync_to_sqlite(
+                                symbol,
+                                candle_store,
+                                weight_store=weight_store,
+                                requested_bars=bars,
+                            )
+                            resolved_symbol = sync_res["symbol"]
+                            point = float(sync_res["point"])
+                            digits = int(sync_res["digits"])
+                            mtf_data = sync_res["mtf_data"]
+                        except Exception as exc:
                             self.error.emit(
-                                "No stored contract info for this symbol and MT5 "
-                                "is unavailable. Run Sync & Evaluate once first."
+                                f"MT5 initialization failed and Web market fallback failed: {exc}"
                             )
                             return
-
+                    else:
                         mt5_started = True
 
                         symbol_info = MT5Connector.get_symbol_info(symbol)
@@ -115,17 +93,53 @@ class SignalWorker(QThread):
                         digits = int(symbol_info.digits)
 
                         if point <= 0.0:
-                            self.error.emit(
-                                f"Invalid point value for {resolved_symbol}."
-                            )
+                            self.error.emit(f"Invalid point value for {resolved_symbol}.")
                             return
 
-                        weight_store.save_contract(
-                            symbol, resolved_symbol, point, digits
-                        )
+                        weight_store.save_contract(symbol, resolved_symbol, point, digits)
                         weight_store.save_contract(
                             resolved_symbol, resolved_symbol, point, digits
                         )
+
+                        coord = MultiTimeframeDataCoordinator(
+                            symbol=resolved_symbol, store=candle_store
+                        )
+                        mtf_data = coord.sync_all(requested_bars=bars)
+                else:
+                    contract = weight_store.load_contract(symbol)
+
+                    if not contract:
+                        if not MT5Connector.initialize():
+                            spec = WebMarketDataProvider.get_symbol_spec(symbol)
+                            resolved_symbol = spec["resolved_symbol"]
+                            point = float(spec["point"])
+                            digits = int(spec["digits"])
+                            weight_store.save_contract(symbol, resolved_symbol, point, digits)
+                            weight_store.save_contract(resolved_symbol, resolved_symbol, point, digits)
+                        else:
+                            mt5_started = True
+
+                            symbol_info = MT5Connector.get_symbol_info(symbol)
+                            if not symbol_info:
+                                self.error.emit(f"Could not resolve symbol {symbol}.")
+                                return
+
+                            resolved_symbol = symbol_info.name
+                            point = float(symbol_info.point)
+                            digits = int(symbol_info.digits)
+
+                            if point <= 0.0:
+                                self.error.emit(
+                                    f"Invalid point value for {resolved_symbol}."
+                                )
+                                return
+
+                            weight_store.save_contract(
+                                symbol, resolved_symbol, point, digits
+                            )
+                            weight_store.save_contract(
+                                resolved_symbol, resolved_symbol, point, digits
+                            )
                     else:
                         resolved_symbol = contract["resolved_symbol"]
                         point = float(contract["point"])
@@ -190,50 +204,24 @@ class SignalWorker(QThread):
 
             if mode == "sync":
                 if not MT5Connector.initialize():
-                    self.error.emit(
-                        "MT5 initialization failed. "
-                        "Ensure MT5 is running and logged into a DEMO account."
-                    )
-                    return
-
-                mt5_started = True
-
-                symbol_info = MT5Connector.get_symbol_info(symbol)
-                if not symbol_info:
-                    self.error.emit(f"Could not resolve symbol {symbol}.")
-                    return
-
-                resolved_symbol = symbol_info.name
-                point = float(symbol_info.point)
-                digits = int(symbol_info.digits)
-
-                if point <= 0.0:
-                    self.error.emit(f"Invalid point value for {resolved_symbol}.")
-                    return
-
-                weight_store.save_contract(symbol, resolved_symbol, point, digits)
-                weight_store.save_contract(
-                    resolved_symbol, resolved_symbol, point, digits
-                )
-
-                engine = DataEngine(
-                    symbol=resolved_symbol,
-                    timeframe=timeframe,
-                    store=candle_store,
-                )
-                raw = engine.sync_recent(limit=bars)
-
-            else:
-                contract = weight_store.load_contract(symbol)
-
-                if not contract:
-                    if not MT5Connector.initialize():
+                    try:
+                        sync_res = WebMarketDataProvider.sync_to_sqlite(
+                            symbol,
+                            candle_store,
+                            weight_store=weight_store,
+                            requested_bars=bars,
+                            timeframe=timeframe,
+                        )
+                        resolved_symbol = sync_res["symbol"]
+                        point = float(sync_res["point"])
+                        digits = int(sync_res["digits"])
+                        raw = sync_res["data"]
+                    except Exception as exc:
                         self.error.emit(
-                            "No stored contract info for this symbol and MT5 "
-                            "is unavailable. Run Sync & Evaluate once first."
+                            f"MT5 initialization failed and Web market fallback failed: {exc}"
                         )
                         return
-
+                else:
                     mt5_started = True
 
                     symbol_info = MT5Connector.get_symbol_info(symbol)
@@ -246,17 +234,56 @@ class SignalWorker(QThread):
                     digits = int(symbol_info.digits)
 
                     if point <= 0.0:
-                        self.error.emit(
-                            f"Invalid point value for {resolved_symbol}."
-                        )
+                        self.error.emit(f"Invalid point value for {resolved_symbol}.")
                         return
 
-                    weight_store.save_contract(
-                        symbol, resolved_symbol, point, digits
-                    )
+                    weight_store.save_contract(symbol, resolved_symbol, point, digits)
                     weight_store.save_contract(
                         resolved_symbol, resolved_symbol, point, digits
                     )
+
+                    engine = DataEngine(
+                        symbol=resolved_symbol,
+                        timeframe=timeframe,
+                        store=candle_store,
+                    )
+                    raw = engine.sync_recent(limit=bars)
+
+            else:
+                contract = weight_store.load_contract(symbol)
+
+                if not contract:
+                    if not MT5Connector.initialize():
+                        spec = WebMarketDataProvider.get_symbol_spec(symbol)
+                        resolved_symbol = spec["resolved_symbol"]
+                        point = float(spec["point"])
+                        digits = int(spec["digits"])
+                        weight_store.save_contract(symbol, resolved_symbol, point, digits)
+                        weight_store.save_contract(resolved_symbol, resolved_symbol, point, digits)
+                    else:
+                        mt5_started = True
+
+                        symbol_info = MT5Connector.get_symbol_info(symbol)
+                        if not symbol_info:
+                            self.error.emit(f"Could not resolve symbol {symbol}.")
+                            return
+
+                        resolved_symbol = symbol_info.name
+                        point = float(symbol_info.point)
+                        digits = int(symbol_info.digits)
+
+                        if point <= 0.0:
+                            self.error.emit(
+                                f"Invalid point value for {resolved_symbol}."
+                            )
+                            return
+
+                        weight_store.save_contract(
+                            symbol, resolved_symbol, point, digits
+                        )
+                        weight_store.save_contract(
+                            resolved_symbol, resolved_symbol, point, digits
+                        )
 
                 else:
                     resolved_symbol = contract["resolved_symbol"]

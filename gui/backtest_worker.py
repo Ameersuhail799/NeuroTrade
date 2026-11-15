@@ -13,6 +13,7 @@ from core.market_regimes import IntradayStrategyConfig
 from core.mt5_connector import MT5Connector
 from core.multi_timeframe_data import MultiTimeframeDataCoordinator
 from core.walk_forward_validator import WalkForwardConfig, WalkForwardValidator
+from core.web_market_data import WebMarketDataProvider
 
 
 class BacktestWorker(QThread):
@@ -59,20 +60,30 @@ class BacktestWorker(QThread):
         try:
             if self.mode == "sync":
                 if not MT5Connector.initialize():
-                    self.error.emit(
-                        "MT5 is unavailable or not logged into a DEMO account. "
-                        "Cannot sync live MT5 history."
-                    )
-                    return
-                mt5_acquired = True
+                    logging.info("MT5 unavailable. Falling back to Live Web Market Feed for backtest...")
+                    try:
+                        sync_res = WebMarketDataProvider.sync_to_sqlite(
+                            self.symbol,
+                            store,
+                            requested_bars=self.bars,
+                        )
+                        mtf_data = sync_res["mtf_data"]
+                        resolved = sync_res["symbol"]
+                    except Exception as exc:
+                        self.error.emit(
+                            f"MT5 is unavailable and Web market sync failed: {exc}"
+                        )
+                        return
+                else:
+                    mt5_acquired = True
 
-                resolved = MT5Connector.resolve_symbol(self.symbol)
-                if not resolved:
-                    self.error.emit(f"Could not resolve broker symbol for: {self.symbol}")
-                    return
+                    resolved = MT5Connector.resolve_symbol(self.symbol)
+                    if not resolved:
+                        self.error.emit(f"Could not resolve broker symbol for: {self.symbol}")
+                        return
 
-                coord = MultiTimeframeDataCoordinator(symbol=resolved, store=store)
-                mtf_data = coord.sync_all(requested_bars=self.bars)
+                    coord = MultiTimeframeDataCoordinator(symbol=resolved, store=store)
+                    mtf_data = coord.sync_all(requested_bars=self.bars)
             else:
                 coord = MultiTimeframeDataCoordinator(symbol=self.symbol, store=store)
                 mtf_data = coord.load_all(requested_bars=self.bars)

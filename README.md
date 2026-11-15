@@ -75,6 +75,7 @@ flowchart TD
 
 ### Level 2 — Historical Data Pipeline & CSV Loader
 - **`HistoricalMTFSync`**: Chunks date-range downloads via `copy_rates_range()` into 30-day batches, normalizing timestamps to UTC epoch in `CandleStore`.
+- **`WebMarketDataProvider` (Zero-Dependency Live Fallback)**: Built-in live and historical multi-timeframe feed using Python standard library `urllib` (no third-party packages, no new DLLs, and no account or API key required). Fetches real 1H, 15m, and 5m market candles for `XAUUSD` (`GC=F`), `EURUSD`, `GBPUSD`, `USDJPY`, and `AUDUSD` with session-aware spreads (rollover widening) and causal 4H resampling. Serves as an automatic transparent fallback across all GUI tabs and CLI commands whenever MT5 is offline or uninstalled.
 - **`CSVDataLoader`**: Imports external datasets, automatically distinguishing standard comma-separated and MetaTrader tab-delimited formats (`<DATE>`, `<TIME>`, `<OPEN>`, `<HIGH>`, `<LOW>`, `<CLOSE>`, `<TICKVOL>`, `<SPREAD>`). Validates monotonicity and price integrity ($H \ge \max(O,C), L \le \min(O,C)$).
 
 ### Level 3 — Realistic Event-Driven Intraday Backtester
@@ -164,7 +165,7 @@ flowchart TD
 
 ## Verification & Unit Testing
 
-Run the full comprehensive test suite (all 58 unit tests across 8 test suites):
+Run the full comprehensive test suite (all 63 unit tests across 9 test suites):
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
@@ -180,12 +181,22 @@ Verify clean bytecode compilation:
 
 `backtest_terminal.py` allows offline quantitative testing without launching the GUI.
 
-### 1. Generate Synthetic Sample Data
+### 1. Run Intraday Backtest from Live Web Feed (Zero-Dependency)
 ```powershell
-.\.venv\Scripts\python.exe scripts/generate_sample_csvs.py
+.\.venv\Scripts\python.exe backtest_terminal.py --symbol XAUUSD --source web --bars 1000
 ```
 
-### 2. Run 5-Stage Filter Ablation Study
+### 2. Run 5-Stage Filter Ablation on Live Web Data
+```powershell
+.\.venv\Scripts\python.exe backtest_terminal.py --symbol XAUUSD --source web --bars 1000 --ablation
+```
+
+### 3. Generate Synthetic Sample Data & Seed SQLite
+```powershell
+.\.venv\Scripts\python.exe scripts/generate_sample_csvs.py --seed-sqlite
+```
+
+### 4. Run 5-Stage Filter Ablation Study from CSV
 ```powershell
 .\.venv\Scripts\python.exe backtest_terminal.py --symbol XAUUSD `
   --h1-csv data/samples/synthetic_xauusd_1H.csv `
@@ -194,7 +205,7 @@ Verify clean bytecode compilation:
   --ablation
 ```
 
-### 3. Run Purged Rolling Walk-Forward Validation
+### 5. Run Purged Rolling Walk-Forward Validation
 ```powershell
 .\.venv\Scripts\python.exe backtest_terminal.py --symbol XAUUSD `
   --h1-csv data/samples/synthetic_xauusd_1H.csv `
@@ -203,7 +214,7 @@ Verify clean bytecode compilation:
   --walk-forward
 ```
 
-### 4. Standard Intraday Backtest from SQLite
+### 6. Standard Intraday Backtest from SQLite
 ```powershell
 .\.venv\Scripts\python.exe backtest_terminal.py --symbol XAUUSD --source sqlite --bars 5000 --risk 0.01
 ```
