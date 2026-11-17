@@ -148,13 +148,16 @@ class PersistentSignalHistoryPanel(SignalHistoryPanel):
             return
 
         all_records = self._history.all_records()
-        setups = [r for r in all_records if r.action in ("LONG_SETUP", "SHORT_SETUP")]
+        actionable_actions = ("LONG_SETUP", "SHORT_SETUP", "LONG_BIAS", "SHORT_BIAS")
+        setups = [r for r in all_records if r.action in actionable_actions]
         if not setups:
-            self._log("No actionable setups (LONG_SETUP / SHORT_SETUP) in history to track.")
+            self._log("No actionable setups (LONG_SETUP, SHORT_SETUP, LONG_BIAS, SHORT_BIAS) in history to track.")
             return
 
         from core.candle_store import CandleStore
         from core.signal_outcome_tracker import SignalOutcomeTracker
+        from core.data_engine import DataEngine
+        from core.mt5_connector import MT5Connector
 
         candle_store = CandleStore()
         if not candle_store.connect():
@@ -166,6 +169,14 @@ class PersistentSignalHistoryPanel(SignalHistoryPanel):
             all_resolved = []
 
             for sym in symbols:
+                # Optionally sync latest M5 candles so evaluation uses fresh bars
+                try:
+                    if MT5Connector.initialize():
+                        de = DataEngine(symbol=sym, timeframe="5m", store=candle_store)
+                        de.sync_recent(limit=500)
+                except Exception:
+                    pass
+
                 sym_setups = [r for r in setups if r.symbol == sym]
                 m5_df = candle_store.load(symbol=sym, timeframe="5m", limit=10000)
                 if m5_df.empty:

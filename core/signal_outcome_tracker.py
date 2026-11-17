@@ -90,7 +90,7 @@ class SignalOutcomeTracker:
                 confidence = float(getattr(sig, "confidence", 0.0))
                 inputs = getattr(sig, "inputs", {})
 
-            if action not in ("LONG_SETUP", "SHORT_SETUP"):
+            if action not in ("LONG_SETUP", "SHORT_SETUP", "LONG_BIAS", "SHORT_BIAS"):
                 continue
 
             intraday_meta = inputs.get("intraday_metadata", {}) if isinstance(inputs, dict) else {}
@@ -99,17 +99,8 @@ class SignalOutcomeTracker:
             tp2 = intraday_meta.get("take_profit_2")
             entry_ref = intraday_meta.get("entry_reference")
             direction = intraday_meta.get(
-                "direction", "long" if action == "LONG_SETUP" else "short"
+                "direction", "long" if action in ("LONG_SETUP", "LONG_BIAS") else "short"
             ).lower()
-
-            if stop_loss is None or tp1 is None:
-                continue
-
-            stop_loss = float(stop_loss)
-            tp1 = float(tp1)
-            tp2_val = float(tp2) if tp2 is not None else (
-                tp1 + abs(tp1 - stop_loss) if direction == "long" else tp1 - abs(tp1 - stop_loss)
-            )
 
             # Restrict strictly to candles AFTER decision_time
             subsequent = candles[candles["time"] > decision_time]
@@ -134,6 +125,35 @@ class SignalOutcomeTracker:
 
             # Enforce realistic next-bar open fill
             entry_price = float(subsequent.iloc[0]["open"])
+
+            # Resolve stop loss & take profit if not provided in intraday_metadata
+            if stop_loss is None or tp1 is None:
+                from core.market_regimes import MarketRegimeAnalyzer
+                profile = MarketRegimeAnalyzer.resolve_profile(symbol)
+                sym_point = profile.default_point if profile else point
+                if (
+                    isinstance(inputs, dict)
+                    and "atr_14" in inputs
+                    and inputs["atr_14"]
+                ):
+                    sl_dist = float(inputs["atr_14"]) * 1.5
+                else:
+                    sl_dist = 300.0 * sym_point
+
+                if direction == "long":
+                    stop_loss = entry_price - sl_dist
+                    tp1 = entry_price + (sl_dist * 2.0)
+                    tp2_val = entry_price + (sl_dist * 3.0)
+                else:
+                    stop_loss = entry_price + sl_dist
+                    tp1 = entry_price - (sl_dist * 2.0)
+                    tp2_val = entry_price - (sl_dist * 3.0)
+            else:
+                stop_loss = float(stop_loss)
+                tp1 = float(tp1)
+                tp2_val = float(tp2) if tp2 is not None else (
+                    tp1 + abs(tp1 - stop_loss) if direction == "long" else tp1 - abs(tp1 - stop_loss)
+                )
             current_stop = stop_loss
             tp1_hit = False
             resolved = False
