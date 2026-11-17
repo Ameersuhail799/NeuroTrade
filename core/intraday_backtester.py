@@ -39,6 +39,23 @@ class BacktestConfig:
     max_hold_m5_bars: int = 48  # 4 hours max holding time (48 * 5m)
     digits: int = 2
 
+    def __post_init__(self):
+        clean = str(self.symbol).strip().upper().replace("/", "").replace("_", "")
+        from core.market_regimes import INSTRUMENT_PROFILES
+        for base, prof in INSTRUMENT_PROFILES.items():
+            if clean.startswith(base):
+                self.point = prof.default_point
+                if base in ("EURUSD", "GBPUSD", "AUDUSD"):
+                    self.digits = 5
+                    self.contract_size = 100000.0
+                elif base == "USDJPY":
+                    self.digits = 3
+                    self.contract_size = 100000.0
+                elif base == "XAUUSD":
+                    self.digits = 2
+                    self.contract_size = 100.0
+                break
+
 
 @dataclass
 class BacktestTrade:

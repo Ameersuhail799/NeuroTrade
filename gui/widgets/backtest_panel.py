@@ -58,6 +58,7 @@ class BacktestPanel(QWidget):
         self.symbol_combo.addItems(ALLOWED_SYMBOLS)
         if DEFAULT_SYMBOL in ALLOWED_SYMBOLS:
             self.symbol_combo.setCurrentText(DEFAULT_SYMBOL)
+        self.symbol_combo.currentTextChanged.connect(self._on_symbol_changed)
 
         lbl_bars = QLabel("M5 Bars (History Span):")
         self.bars_spin = QSpinBox()
@@ -186,6 +187,24 @@ class BacktestPanel(QWidget):
         right_layout.addWidget(report_group)
 
         main_layout.addWidget(right_widget, stretch=1)
+
+    def _on_symbol_changed(self, symbol: str):
+        sym_clean = str(symbol).strip().upper()
+        if sym_clean.startswith("XAU"):
+            self.spread_spin.setValue(20.0)
+            self.slippage_spin.setValue(5.0)
+        elif sym_clean.startswith("EUR"):
+            self.spread_spin.setValue(12.0)
+            self.slippage_spin.setValue(2.0)
+        elif sym_clean.startswith("GBP"):
+            self.spread_spin.setValue(15.0)
+            self.slippage_spin.setValue(2.0)
+        elif sym_clean.startswith("JPY") or "JPY" in sym_clean:
+            self.spread_spin.setValue(12.0)
+            self.slippage_spin.setValue(2.0)
+        elif sym_clean.startswith("AUD"):
+            self.spread_spin.setValue(14.0)
+            self.slippage_spin.setValue(2.0)
 
     def _get_strategy_config(self) -> IntradayStrategyConfig:
         return IntradayStrategyConfig(
