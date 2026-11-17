@@ -11,7 +11,7 @@ Part 6 scope:
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from datetime import datetime
 import math
 
@@ -305,15 +305,15 @@ class DemoTradeExecutor:
         self._ensure_symbol_tradable(symbol_info)
         return self._contract_dict(symbol_info)
 
-    def _positions(self, symbol: str) -> List[Dict[str, Any]]:
-        contract = self._contract_info(symbol)
-        positions = mt5.positions_get(symbol=contract["symbol"])
+    def _positions(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+        if symbol:
+            contract = self._contract_info(symbol)
+            positions = mt5.positions_get(symbol=contract["symbol"])
+        else:
+            positions = mt5.positions_get()
 
         if positions is None:
-            raise RuntimeError(
-                f"positions_get failed for {contract['symbol']}. "
-                f"MT5 error: {mt5.last_error()}"
-            )
+            positions = ()
 
         result = []
         buy_type = getattr(mt5, "POSITION_TYPE_BUY", 0)
@@ -355,7 +355,7 @@ class DemoTradeExecutor:
 
             account = self._account_summary()
             contract = self._contract_info(symbol)
-            positions = self._positions(symbol)
+            positions = self._positions()  # Show ALL open positions across all account instruments
 
             return {
                 "account": account,
