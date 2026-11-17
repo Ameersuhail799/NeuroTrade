@@ -374,10 +374,10 @@ class SignalHistoryPanel(QWidget):
             self._log("Select a signal record first.")
             return
 
-        if record.action not in ("LONG_SETUP", "SHORT_SETUP"):
+        if record.action not in ("LONG_SETUP", "SHORT_SETUP", "LONG_BIAS", "SHORT_BIAS"):
             self._log(
                 f"Signal #{record.record_id} ({record.action}) is not an actionable trade setup. "
-                "Only LONG_SETUP and SHORT_SETUP can be pre-filled."
+                "Only LONG_SETUP, SHORT_SETUP, LONG_BIAS, and SHORT_BIAS can be pre-filled."
             )
             return
 
@@ -391,7 +391,11 @@ class SignalHistoryPanel(QWidget):
         tp1 = intraday_meta.get("take_profit_1")
         direction = str(intraday_meta.get("direction", "")).lower()
 
-        side = "buy" if (record.action == "LONG_SETUP" or "long" in direction) else "sell"
+        side = (
+            "buy"
+            if (record.action in ("LONG_SETUP", "LONG_BIAS") or "long" in direction)
+            else "sell"
+        )
 
         from core.market_regimes import InstrumentProfile
         profile = InstrumentProfile.for_symbol(record.symbol)
@@ -399,13 +403,20 @@ class SignalHistoryPanel(QWidget):
 
         if entry_ref is not None and stop_loss is not None:
             sl_points = max(10, int(round(abs(float(entry_ref) - float(stop_loss)) / point)))
+        elif (
+            isinstance(record.inputs, dict)
+            and "atr_14" in record.inputs
+            and record.inputs["atr_14"]
+        ):
+            atr_val = float(record.inputs["atr_14"])
+            sl_points = max(10, int(round((atr_val * 1.5) / point)))
         else:
             sl_points = 300
 
         if entry_ref is not None and tp1 is not None:
             tp_points = max(10, int(round(abs(float(tp1) - float(entry_ref)) / point)))
         else:
-            tp_points = 600
+            tp_points = max(20, sl_points * 2)
 
         payload = {
             "symbol": record.symbol,
