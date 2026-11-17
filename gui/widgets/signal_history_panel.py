@@ -369,72 +369,75 @@ class SignalHistoryPanel(QWidget):
         self.history_table.resizeColumnsToContents()
 
     def _prefill_in_trading_panel(self):
-        record = self._current_selected_record()
-        if record is None:
-            self._log("Select a signal record first.")
-            return
+        try:
+            record = self._current_selected_record()
+            if record is None:
+                self._log("Select a signal record first.")
+                return
 
-        if record.action not in ("LONG_SETUP", "SHORT_SETUP", "LONG_BIAS", "SHORT_BIAS"):
-            self._log(
-                f"Signal #{record.record_id} ({record.action}) is not an actionable trade setup. "
-                "Only LONG_SETUP, SHORT_SETUP, LONG_BIAS, and SHORT_BIAS can be pre-filled."
+            if record.action not in ("LONG_SETUP", "SHORT_SETUP", "LONG_BIAS", "SHORT_BIAS"):
+                self._log(
+                    f"Signal #{record.record_id} ({record.action}) is not an actionable trade setup. "
+                    "Only LONG_SETUP, SHORT_SETUP, LONG_BIAS, and SHORT_BIAS can be pre-filled."
+                )
+                return
+
+            intraday_meta = (
+                record.inputs.get("intraday_metadata", {})
+                if isinstance(record.inputs, dict)
+                else {}
             )
-            return
+            entry_ref = intraday_meta.get("entry_reference")
+            stop_loss = intraday_meta.get("stop_loss")
+            tp1 = intraday_meta.get("take_profit_1")
+            direction = str(intraday_meta.get("direction", "")).lower()
 
-        intraday_meta = (
-            record.inputs.get("intraday_metadata", {})
-            if isinstance(record.inputs, dict)
-            else {}
-        )
-        entry_ref = intraday_meta.get("entry_reference")
-        stop_loss = intraday_meta.get("stop_loss")
-        tp1 = intraday_meta.get("take_profit_1")
-        direction = str(intraday_meta.get("direction", "")).lower()
+            side = (
+                "buy"
+                if (record.action in ("LONG_SETUP", "LONG_BIAS") or "long" in direction)
+                else "sell"
+            )
 
-        side = (
-            "buy"
-            if (record.action in ("LONG_SETUP", "LONG_BIAS") or "long" in direction)
-            else "sell"
-        )
+            from core.market_regimes import MarketRegimeAnalyzer
+            profile = MarketRegimeAnalyzer.resolve_profile(str(record.symbol))
+            point = profile.default_point if profile else 0.01
 
-        from core.market_regimes import InstrumentProfile
-        profile = InstrumentProfile.for_symbol(record.symbol)
-        point = profile.default_point if profile else 0.01
+            if entry_ref is not None and stop_loss is not None:
+                sl_points = max(10, int(round(abs(float(entry_ref) - float(stop_loss)) / point)))
+            elif (
+                isinstance(record.inputs, dict)
+                and "atr_14" in record.inputs
+                and record.inputs["atr_14"]
+            ):
+                atr_val = float(record.inputs["atr_14"])
+                sl_points = max(10, int(round((atr_val * 1.5) / point)))
+            else:
+                sl_points = 300
 
-        if entry_ref is not None and stop_loss is not None:
-            sl_points = max(10, int(round(abs(float(entry_ref) - float(stop_loss)) / point)))
-        elif (
-            isinstance(record.inputs, dict)
-            and "atr_14" in record.inputs
-            and record.inputs["atr_14"]
-        ):
-            atr_val = float(record.inputs["atr_14"])
-            sl_points = max(10, int(round((atr_val * 1.5) / point)))
-        else:
-            sl_points = 300
+            if entry_ref is not None and tp1 is not None:
+                tp_points = max(10, int(round(abs(float(tp1) - float(entry_ref)) / point)))
+            else:
+                tp_points = max(20, sl_points * 2)
 
-        if entry_ref is not None and tp1 is not None:
-            tp_points = max(10, int(round(abs(float(tp1) - float(entry_ref)) / point)))
-        else:
-            tp_points = max(20, sl_points * 2)
+            payload = {
+                "symbol": record.symbol,
+                "side": side,
+                "sl_points": sl_points,
+                "tp_points": tp_points,
+                "entry_reference": entry_ref,
+                "stop_loss": stop_loss,
+                "take_profit_1": tp1,
+                "risk_pct": 1.0,
+                "confluence_score": float(record.confidence),
+            }
 
-        payload = {
-            "symbol": record.symbol,
-            "side": side,
-            "sl_points": sl_points,
-            "tp_points": tp_points,
-            "entry_reference": entry_ref,
-            "stop_loss": stop_loss,
-            "take_profit_1": tp1,
-            "risk_pct": 1.0,
-            "confluence_score": float(record.confidence),
-        }
-
-        self._log(
-            f"Pre-filling order ticket: {record.symbol} {side.upper()} "
-            f"SL={sl_points} pts | TP={tp_points} pts..."
-        )
-        self.setup_selected_for_trade.emit(payload)
+            self._log(
+                f"Pre-filling order ticket: {record.symbol} {side.upper()} "
+                f"SL={sl_points} pts | TP={tp_points} pts..."
+            )
+            self.setup_selected_for_trade.emit(payload)
+        except Exception as exc:
+            self._log(f"Error pre-filling trade setup: {exc}")
 
     def _current_selected_record(self):
         rows = self.history_table.selectionModel().selectedRows()

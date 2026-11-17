@@ -102,13 +102,16 @@ class IntegratedMainWindow(MainWindow):
         Pre-fill order ticket in Trading tab and activate Trading tab
         for manual trader review. Strictly demo execution, no automated orders.
         """
-        self.trading_panel.prefill_order_ticket(data)
-        self.tabs.setCurrentWidget(self.trading_panel)
-        symbol = data.get("symbol", "N/A")
-        side = str(data.get("side", "")).upper()
-        self.append_log(
-            f"Pre-filled trade setup for {symbol} ({side}) in Trading tab for manual review."
-        )
+        try:
+            self.trading_panel.prefill_order_ticket(data)
+            self.tabs.setCurrentWidget(self.trading_panel)
+            symbol = data.get("symbol", "N/A")
+            side = str(data.get("side", "")).upper()
+            self.append_log(
+                f"Pre-filled trade setup for {symbol} ({side}) in Trading tab for manual review."
+            )
+        except Exception as exc:
+            self.append_log(f"Error activating trade ticket: {exc}")
 
     def _mt5_guard_allowed(self) -> bool:
         """
