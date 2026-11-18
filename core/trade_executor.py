@@ -323,7 +323,7 @@ class DemoTradeExecutor:
         server_offset = 0
         try:
             sample_sym = symbol if symbol else (positions[0].symbol if positions else "EURUSD")
-            tick = self._mt5.symbol_info_tick(sample_sym)
+            tick = mt5.symbol_info_tick(sample_sym)
             if tick and getattr(tick, "time", None):
                 server_offset = int(tick.time - time.time())
         except Exception:
