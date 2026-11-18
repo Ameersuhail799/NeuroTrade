@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QSpinBox,
+    QCheckBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -100,21 +101,38 @@ class TradingPanel(QWidget):
         self.tp_spin.setValue(600)
         order_layout.addWidget(self.tp_spin, 1, 3)
 
+        # Target R/R buttons on row 2
+        order_layout.addWidget(QLabel("Target R/R"), 2, 0)
+        rr_layout = QHBoxLayout()
+        self.rr_1_0_button = QPushButton("1.0R (Scalp)")
+        self.rr_1_0_button.clicked.connect(lambda: self._set_rr_target(1.0))
+        rr_layout.addWidget(self.rr_1_0_button)
+
+        self.rr_1_5_button = QPushButton("1.5R (Standard)")
+        self.rr_1_5_button.clicked.connect(lambda: self._set_rr_target(1.5))
+        rr_layout.addWidget(self.rr_1_5_button)
+
+        self.rr_2_0_button = QPushButton("2.0R (Runner)")
+        self.rr_2_0_button.clicked.connect(lambda: self._set_rr_target(2.0))
+        rr_layout.addWidget(self.rr_2_0_button)
+        order_layout.addLayout(rr_layout, 2, 1, 1, 3)
+
+        # Action buttons on row 3
         self.refresh_button = QPushButton("Refresh")
         self.refresh_button.clicked.connect(self._refresh_context)
-        order_layout.addWidget(self.refresh_button, 2, 0)
+        order_layout.addWidget(self.refresh_button, 3, 0)
 
         self.open_long_button = QPushButton("Open Demo Long")
         self.open_long_button.clicked.connect(lambda: self._open_position("buy"))
-        order_layout.addWidget(self.open_long_button, 2, 1)
+        order_layout.addWidget(self.open_long_button, 3, 1)
 
         self.open_short_button = QPushButton("Open Demo Short")
         self.open_short_button.clicked.connect(lambda: self._open_position("sell"))
-        order_layout.addWidget(self.open_short_button, 2, 2)
+        order_layout.addWidget(self.open_short_button, 3, 2)
 
         self.close_button = QPushButton("Close Selected Position")
         self.close_button.clicked.connect(self._close_selected_position)
-        order_layout.addWidget(self.close_button, 2, 3)
+        order_layout.addWidget(self.close_button, 3, 3)
 
         root_layout.addWidget(order_group)
 
@@ -153,6 +171,23 @@ class TradingPanel(QWidget):
         )
 
         positions_layout.addWidget(self.positions_table)
+
+        # Positions action toolbar
+        pos_toolbar = QHBoxLayout()
+        self.be_button = QPushButton("Move Selected to Breakeven (BE)")
+        self.be_button.setStyleSheet("font-weight: bold; color: #2ecc71;")
+        self.be_button.clicked.connect(self._move_selected_to_breakeven)
+        pos_toolbar.addWidget(self.be_button)
+
+        self.close_pos_button = QPushButton("Close Selected Position")
+        self.close_pos_button.clicked.connect(self._close_selected_position)
+        pos_toolbar.addWidget(self.close_pos_button)
+
+        self.auto_be_checkbox = QCheckBox("Auto-move to Breakeven at +1.0R profit")
+        self.auto_be_checkbox.setChecked(True)
+        pos_toolbar.addWidget(self.auto_be_checkbox)
+
+        positions_layout.addLayout(pos_toolbar)
         root_layout.addWidget(positions_group, stretch=1)
 
         # Trade output
@@ -184,10 +219,16 @@ class TradingPanel(QWidget):
             self.volume_spin,
             self.sl_spin,
             self.tp_spin,
+            self.rr_1_0_button,
+            self.rr_1_5_button,
+            self.rr_2_0_button,
             self.refresh_button,
             self.open_long_button,
             self.open_short_button,
             self.close_button,
+            self.be_button,
+            self.close_pos_button,
+            self.auto_be_checkbox,
         ]
 
         self._set_controls_enabled(False)
@@ -272,6 +313,38 @@ class TradingPanel(QWidget):
 
         self._start_worker("open", payload)
 
+    def _set_rr_target(self, multiple: float):
+        sl = max(10, int(self.sl_spin.value()))
+        tp = max(10, int(round(sl * multiple)))
+        self.tp_spin.setValue(tp)
+        self._append_output(
+            f"Target R/R set to {multiple:.1f}R: TP={tp} points (based on SL={sl} pts)."
+        )
+
+    def _move_selected_to_breakeven(self):
+        if not self._prepare_mt5_action():
+            return
+
+        selected_rows = self.positions_table.selectionModel().selectedRows()
+        if not selected_rows:
+            self._append_output("Select an open position row from the table first.")
+            return
+
+        row = selected_rows[0].row()
+        ticket_item = self.positions_table.item(row, 0)
+
+        if ticket_item is None:
+            self._append_output("Selected row has no ticket.")
+            return
+
+        ticket = ticket_item.data(Qt.ItemDataRole.UserRole)
+        if ticket is None:
+            self._append_output("Selected row has an invalid ticket.")
+            return
+
+        self._append_output(f"Submitting Breakeven request for position ticket #{ticket}...")
+        self._start_worker("breakeven", {"ticket": int(ticket)})
+
     def _close_selected_position(self):
         if not self._prepare_mt5_action():
             return
@@ -332,7 +405,44 @@ class TradingPanel(QWidget):
             f"Refresh complete. Open positions: {len(positions)}."
         )
 
+        self._check_auto_breakeven(positions)
         self._set_controls_enabled(self._enabled)
+
+    def _check_auto_breakeven(self, positions: list):
+        if not self.auto_be_checkbox.isChecked():
+            return
+
+        for pos in positions:
+            ticket = pos.get("ticket")
+            pos_type = str(pos.get("type", "")).upper()
+            open_p = float(pos.get("open_price", 0.0))
+            sl_p = float(pos.get("sl", 0.0))
+            curr_p = float(pos.get("current_price", open_p))
+
+            if pos_type == "BUY":
+                risk_dist = open_p - sl_p
+                # Only if SL is strictly below entry (not yet at or above BE)
+                if 0 < sl_p < open_p and risk_dist > 0:
+                    profit_dist = curr_p - open_p
+                    if profit_dist >= risk_dist and not self.is_worker_running():
+                        self._append_output(
+                            f"Auto-BE Watchdog: Position #{ticket} (BUY) reached +1.0R "
+                            f"(+{profit_dist:.5f} >= {risk_dist:.5f} risk). Moving SL to Breakeven..."
+                        )
+                        self._start_worker("breakeven", {"ticket": int(ticket)})
+                        break
+            elif pos_type == "SELL":
+                risk_dist = sl_p - open_p
+                # Only if SL is strictly above entry (not yet at or below BE)
+                if sl_p > open_p and risk_dist > 0:
+                    profit_dist = open_p - curr_p
+                    if profit_dist >= risk_dist and not self.is_worker_running():
+                        self._append_output(
+                            f"Auto-BE Watchdog: Position #{ticket} (SELL) reached +1.0R "
+                            f"(+{profit_dist:.5f} >= {risk_dist:.5f} risk). Moving SL to Breakeven..."
+                        )
+                        self._start_worker("breakeven", {"ticket": int(ticket)})
+                        break
 
     def prefill_order_ticket(self, data: dict):
         """

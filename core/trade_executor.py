@@ -335,6 +335,7 @@ class DemoTradeExecutor:
                     "type": position_type,
                     "volume": float(position.volume),
                     "open_price": float(position.price_open),
+                    "current_price": float(getattr(position, "price_current", position.price_open)),
                     "sl": float(position.sl),
                     "tp": float(position.tp),
                     "profit": float(position.profit),
@@ -599,6 +600,86 @@ class DemoTradeExecutor:
                 symbol=symbol_info.name,
                 request=request,
                 notes=[],
+            )
+
+        finally:
+            self._shutdown()
+
+    def move_to_breakeven(self, ticket: int) -> TradeExecutionResult:
+        """
+        Move Stop Loss of an open position to its entry price (breakeven).
+        """
+        ticket = int(ticket)
+
+        try:
+            self._initialize()
+
+            positions = mt5.positions_get(ticket=ticket)
+            if not positions:
+                raise RuntimeError(f"Position ticket {ticket} was not found.")
+
+            position = positions[0]
+            entry_price = float(position.price_open)
+            current_sl = float(position.sl)
+            pos_type = int(position.type)
+            buy_type = getattr(mt5, "POSITION_TYPE_BUY", 0)
+
+            # Check if SL is already at or past breakeven
+            if pos_type == int(buy_type):
+                if current_sl >= entry_price and current_sl > 0:
+                    return TradeExecutionResult(
+                        success=True,
+                        action="move_breakeven",
+                        symbol=str(position.symbol),
+                        ticket=ticket,
+                        retcode=10009,
+                        message=f"Position #{ticket} SL ({current_sl}) is already at or above entry ({entry_price}).",
+                        price=entry_price,
+                        volume=float(position.volume),
+                        sl=current_sl,
+                        tp=float(position.tp),
+                        notes=["Already protected at breakeven."],
+                    )
+            else:
+                if current_sl <= entry_price and current_sl > 0:
+                    return TradeExecutionResult(
+                        success=True,
+                        action="move_breakeven",
+                        symbol=str(position.symbol),
+                        ticket=ticket,
+                        retcode=10009,
+                        message=f"Position #{ticket} SL ({current_sl}) is already at or below entry ({entry_price}).",
+                        price=entry_price,
+                        volume=float(position.volume),
+                        sl=current_sl,
+                        tp=float(position.tp),
+                        notes=["Already protected at breakeven."],
+                    )
+
+            symbol_info = MT5Connector.get_symbol_info(position.symbol)
+            if not symbol_info:
+                raise RuntimeError(f"Could not resolve symbol {position.symbol}.")
+
+            contract = self._contract_dict(symbol_info)
+            digits = int(contract["digits"])
+            be_sl = self.round_price(entry_price, digits)
+
+            request = {
+                "action": getattr(mt5, "TRADE_ACTION_SLTP", 6),
+                "position": ticket,
+                "symbol": symbol_info.name,
+                "sl": be_sl,
+                "tp": float(position.tp),
+            }
+
+            result = self._send_order(request)
+            notes = [f"Moved position #{ticket} Stop Loss to Breakeven at {be_sl}."]
+            return self._build_execution_result(
+                result=result,
+                action="move_breakeven",
+                symbol=symbol_info.name,
+                request=request,
+                notes=notes,
             )
 
         finally:

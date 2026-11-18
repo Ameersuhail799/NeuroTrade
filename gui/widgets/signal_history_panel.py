@@ -417,7 +417,7 @@ class SignalHistoryPanel(QWidget):
             if entry_ref is not None and tp1 is not None:
                 tp_points = max(10, int(round(abs(float(tp1) - float(entry_ref)) / point)))
             else:
-                tp_points = max(20, sl_points * 2)
+                tp_points = max(20, int(round(sl_points * 1.5)))
 
             payload = {
                 "symbol": record.symbol,

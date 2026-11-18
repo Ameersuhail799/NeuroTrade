@@ -52,6 +52,12 @@ class TradeWorker(QThread):
                 )
                 self.execution_ready.emit(result)
 
+            elif self.action == "breakeven":
+                result = executor.move_to_breakeven(
+                    ticket=self.payload.get("ticket")
+                )
+                self.execution_ready.emit(result)
+
             else:
                 raise ValueError(f"Unknown trade worker action: {self.action}")
 
