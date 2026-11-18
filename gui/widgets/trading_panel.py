@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QGridLayout,
     QGroupBox,
+    QFrame,
     QLabel,
     QComboBox,
     QDoubleSpinBox,
@@ -28,6 +29,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal
 
 from gui.trade_worker import TradeWorker
+from core.trade_executor import DemoTradeExecutor
 from config import ALLOWED_SYMBOLS, DEFAULT_SYMBOL
 
 
@@ -47,6 +49,8 @@ class TradingPanel(QWidget):
         self._worker = None
         self._mt5_guard = None
         self._enabled = False
+        self._updating_sizing = False
+        self._context = {}
 
         self._build_ui()
 
@@ -74,35 +78,82 @@ class TradingPanel(QWidget):
         # New demo order controls
         order_group = QGroupBox("New Demo Order")
         order_layout = QGridLayout(order_group)
+        order_layout.setVerticalSpacing(8)
+        order_layout.setHorizontalSpacing(10)
 
+        # Row 0: Symbol & Spend/Risk Budget
         order_layout.addWidget(QLabel("Symbol"), 0, 0)
         self.symbol_combo = QComboBox()
         self.symbol_combo.addItems(ALLOWED_SYMBOLS)
         self.symbol_combo.setCurrentText(DEFAULT_SYMBOL)
+        self.symbol_combo.currentIndexChanged.connect(self._on_symbol_changed)
         order_layout.addWidget(self.symbol_combo, 0, 1)
 
-        order_layout.addWidget(QLabel("Volume"), 0, 2)
+        order_layout.addWidget(QLabel("Spend / Risk ($)"), 0, 2)
+        risk_input_layout = QHBoxLayout()
+        risk_input_layout.setSpacing(4)
+        self.risk_spin = QDoubleSpinBox()
+        self.risk_spin.setRange(1.0, 100000.0)
+        self.risk_spin.setDecimals(2)
+        self.risk_spin.setSingleStep(5.0)
+        self.risk_spin.setValue(30.0)
+        self.risk_spin.setPrefix("$ ")
+        self.risk_spin.setStyleSheet("font-weight: bold; color: #ff6b6b;")
+        self.risk_spin.valueChanged.connect(self._on_risk_spin_changed)
+        risk_input_layout.addWidget(self.risk_spin)
+
+        self.preset_10_btn = QPushButton("$10")
+        self.preset_10_btn.setFixedWidth(40)
+        self.preset_10_btn.clicked.connect(lambda: self._apply_risk_preset(10.0))
+        risk_input_layout.addWidget(self.preset_10_btn)
+
+        self.preset_25_btn = QPushButton("$25")
+        self.preset_25_btn.setFixedWidth(40)
+        self.preset_25_btn.clicked.connect(lambda: self._apply_risk_preset(25.0))
+        risk_input_layout.addWidget(self.preset_25_btn)
+
+        self.preset_50_btn = QPushButton("$50")
+        self.preset_50_btn.setFixedWidth(40)
+        self.preset_50_btn.clicked.connect(lambda: self._apply_risk_preset(50.0))
+        risk_input_layout.addWidget(self.preset_50_btn)
+
+        self.preset_100_btn = QPushButton("$100")
+        self.preset_100_btn.setFixedWidth(45)
+        self.preset_100_btn.clicked.connect(lambda: self._apply_risk_preset(100.0))
+        risk_input_layout.addWidget(self.preset_100_btn)
+
+        self.preset_1pct_btn = QPushButton("1% Balance")
+        self.preset_1pct_btn.clicked.connect(lambda: self._apply_balance_pct_preset(1.0))
+        risk_input_layout.addWidget(self.preset_1pct_btn)
+
+        order_layout.addLayout(risk_input_layout, 0, 3)
+
+        # Row 1: Volume (Lots) & SL points
+        order_layout.addWidget(QLabel("Volume (Lots)"), 1, 0)
         self.volume_spin = QDoubleSpinBox()
         self.volume_spin.setRange(0.01, 100.0)
         self.volume_spin.setDecimals(2)
         self.volume_spin.setSingleStep(0.01)
         self.volume_spin.setValue(0.01)
-        order_layout.addWidget(self.volume_spin, 0, 3)
+        self.volume_spin.valueChanged.connect(self._on_volume_spin_changed)
+        order_layout.addWidget(self.volume_spin, 1, 1)
 
-        order_layout.addWidget(QLabel("SL points"), 1, 0)
+        order_layout.addWidget(QLabel("SL points"), 1, 2)
         self.sl_spin = QSpinBox()
         self.sl_spin.setRange(0, 1_000_000)
         self.sl_spin.setValue(300)
-        order_layout.addWidget(self.sl_spin, 1, 1)
+        self.sl_spin.valueChanged.connect(self._on_sl_spin_changed)
+        order_layout.addWidget(self.sl_spin, 1, 3)
 
-        order_layout.addWidget(QLabel("TP points"), 1, 2)
+        # Row 2: TP points & Target R/R buttons
+        order_layout.addWidget(QLabel("TP points"), 2, 0)
         self.tp_spin = QSpinBox()
         self.tp_spin.setRange(0, 1_000_000)
         self.tp_spin.setValue(600)
-        order_layout.addWidget(self.tp_spin, 1, 3)
+        self.tp_spin.valueChanged.connect(self._on_tp_spin_changed)
+        order_layout.addWidget(self.tp_spin, 2, 1)
 
-        # Target R/R buttons on row 2
-        order_layout.addWidget(QLabel("Target R/R"), 2, 0)
+        order_layout.addWidget(QLabel("Target R/R"), 2, 2)
         rr_layout = QHBoxLayout()
         self.rr_1_0_button = QPushButton("1.0R (Scalp)")
         self.rr_1_0_button.clicked.connect(lambda: self._set_rr_target(1.0))
@@ -115,24 +166,60 @@ class TradingPanel(QWidget):
         self.rr_2_0_button = QPushButton("2.0R (Runner)")
         self.rr_2_0_button.clicked.connect(lambda: self._set_rr_target(2.0))
         rr_layout.addWidget(self.rr_2_0_button)
-        order_layout.addLayout(rr_layout, 2, 1, 1, 3)
+        order_layout.addLayout(rr_layout, 2, 3)
 
-        # Action buttons on row 3
+        # Row 3: Live Financial Receipt Card
+        self.preview_card = QFrame()
+        self.preview_card.setStyleSheet(
+            "QFrame { background-color: #1a1e28; border: 1px solid #2d3342; border-radius: 6px; padding: 4px; }"
+        )
+        card_layout = QGridLayout(self.preview_card)
+        card_layout.setContentsMargins(10, 6, 10, 6)
+        card_layout.setHorizontalSpacing(16)
+        card_layout.setVerticalSpacing(4)
+
+        self.lbl_card_title = QLabel("📊 Live Order Cost & Risk Breakdown:")
+        self.lbl_card_title.setStyleSheet("font-weight: bold; color: #8ab4f8; font-size: 11px;")
+        card_layout.addWidget(self.lbl_card_title, 0, 0, 1, 3)
+
+        self.lbl_card_risk = QLabel("🛑 Max Loss (SL): -$30.00 (-0.03%)")
+        self.lbl_card_risk.setStyleSheet("color: #ff6b6b; font-weight: bold;")
+        card_layout.addWidget(self.lbl_card_risk, 1, 0)
+
+        self.lbl_card_profit = QLabel("🎯 Target Profit (TP): +$45.00 (+0.04%) [1.5R]")
+        self.lbl_card_profit.setStyleSheet("color: #51cf66; font-weight: bold;")
+        card_layout.addWidget(self.lbl_card_profit, 1, 1)
+
+        self.lbl_card_margin = QLabel("🔒 Margin Deposit: $75.30 (1:100 Lev)")
+        self.lbl_card_margin.setStyleSheet("color: #74c0fc;")
+        card_layout.addWidget(self.lbl_card_margin, 1, 2)
+
+        self.lbl_card_value = QLabel("💼 Controlled Asset Value: $7,530.00")
+        self.lbl_card_value.setStyleSheet("color: #ced4da;")
+        card_layout.addWidget(self.lbl_card_value, 2, 0)
+
+        self.lbl_card_outcome = QLabel("🏦 Projected Balance: Win: $101,798.11  |  Loss: $101,723.11")
+        self.lbl_card_outcome.setStyleSheet("color: #ffd43b;")
+        card_layout.addWidget(self.lbl_card_outcome, 2, 1, 1, 2)
+
+        order_layout.addWidget(self.preview_card, 3, 0, 1, 4)
+
+        # Row 4: Action buttons
         self.refresh_button = QPushButton("Refresh")
         self.refresh_button.clicked.connect(self._refresh_context)
-        order_layout.addWidget(self.refresh_button, 3, 0)
+        order_layout.addWidget(self.refresh_button, 4, 0)
 
         self.open_long_button = QPushButton("Open Demo Long")
         self.open_long_button.clicked.connect(lambda: self._open_position("buy"))
-        order_layout.addWidget(self.open_long_button, 3, 1)
+        order_layout.addWidget(self.open_long_button, 4, 1)
 
         self.open_short_button = QPushButton("Open Demo Short")
         self.open_short_button.clicked.connect(lambda: self._open_position("sell"))
-        order_layout.addWidget(self.open_short_button, 3, 2)
+        order_layout.addWidget(self.open_short_button, 4, 2)
 
         self.close_button = QPushButton("Close Selected Position")
         self.close_button.clicked.connect(self._close_selected_position)
-        order_layout.addWidget(self.close_button, 3, 3)
+        order_layout.addWidget(self.close_button, 4, 3)
 
         root_layout.addWidget(order_group)
 
@@ -141,13 +228,15 @@ class TradingPanel(QWidget):
         positions_layout = QVBoxLayout(positions_group)
 
         self.positions_table = QTableWidget()
-        self.positions_table.setColumnCount(9)
+        self.positions_table.setColumnCount(11)
         self.positions_table.setHorizontalHeaderLabels(
             [
                 "Ticket",
                 "Symbol",
                 "Type",
                 "Volume",
+                "Margin ($)",
+                "Max Risk ($)",
                 "Open Price",
                 "SL",
                 "TP",
@@ -216,6 +305,12 @@ class TradingPanel(QWidget):
 
         self._interactive_widgets = [
             self.symbol_combo,
+            self.risk_spin,
+            self.preset_10_btn,
+            self.preset_25_btn,
+            self.preset_50_btn,
+            self.preset_100_btn,
+            self.preset_1pct_btn,
             self.volume_spin,
             self.sl_spin,
             self.tp_spin,
@@ -320,6 +415,131 @@ class TradingPanel(QWidget):
         self._append_output(
             f"Target R/R set to {multiple:.1f}R: TP={tp} points (based on SL={sl} pts)."
         )
+        self._update_preview_card()
+
+    def _apply_risk_preset(self, dollars: float):
+        self.risk_spin.setValue(float(dollars))
+
+    def _apply_balance_pct_preset(self, pct: float):
+        balance = 100000.0
+        if self._context and "account" in self._context:
+            balance = float(self._context["account"].get("balance", balance))
+        self.risk_spin.setValue(round(balance * (pct / 100.0), 2))
+
+    def _on_risk_spin_changed(self, target_risk: float):
+        if self._updating_sizing or target_risk <= 0:
+            return
+        self._updating_sizing = True
+        try:
+            self._recalculate_from_risk(target_risk)
+        finally:
+            self._updating_sizing = False
+
+    def _recalculate_from_risk(self, target_risk: float):
+        symbol = self.symbol_combo.currentText().strip()
+        sl_points = max(10, int(self.sl_spin.value()))
+        tp_points = max(10, int(self.tp_spin.value()))
+
+        try:
+            executor = DemoTradeExecutor()
+            preview = executor.calculate_order_preview(
+                symbol=symbol,
+                side="sell",
+                volume=float(self.volume_spin.value()),
+                sl_points=sl_points,
+                tp_points=tp_points,
+                target_risk=target_risk,
+            )
+            if preview and "volume" in preview:
+                self.volume_spin.blockSignals(True)
+                self.volume_spin.setValue(float(preview["volume"]))
+                self.volume_spin.blockSignals(False)
+                self._render_preview_card(preview)
+        except Exception:
+            pass
+
+    def _on_volume_spin_changed(self, volume: float):
+        if self._updating_sizing or volume <= 0:
+            return
+        self._updating_sizing = True
+        try:
+            self._recalculate_from_volume(volume)
+        finally:
+            self._updating_sizing = False
+
+    def _recalculate_from_volume(self, volume: float):
+        symbol = self.symbol_combo.currentText().strip()
+        sl_points = max(10, int(self.sl_spin.value()))
+        tp_points = max(10, int(self.tp_spin.value()))
+
+        try:
+            executor = DemoTradeExecutor()
+            preview = executor.calculate_order_preview(
+                symbol=symbol,
+                side="sell",
+                volume=volume,
+                sl_points=sl_points,
+                tp_points=tp_points,
+            )
+            if preview:
+                if "risk_dollars" in preview and preview["risk_dollars"] > 0:
+                    self.risk_spin.blockSignals(True)
+                    self.risk_spin.setValue(float(preview["risk_dollars"]))
+                    self.risk_spin.blockSignals(False)
+                self._render_preview_card(preview)
+        except Exception:
+            pass
+
+    def _on_sl_spin_changed(self, sl_points: int):
+        if not self._updating_sizing:
+            self._on_risk_spin_changed(self.risk_spin.value())
+
+    def _on_tp_spin_changed(self, tp_points: int):
+        if not self._updating_sizing:
+            self._update_preview_card()
+
+    def _on_symbol_changed(self, idx: int):
+        if not self._updating_sizing:
+            self._update_preview_card()
+
+    def _update_preview_card(self):
+        try:
+            symbol = self.symbol_combo.currentText().strip()
+            volume = float(self.volume_spin.value())
+            sl_points = max(0, int(self.sl_spin.value()))
+            tp_points = max(0, int(self.tp_spin.value()))
+
+            executor = DemoTradeExecutor()
+            preview = executor.calculate_order_preview(
+                symbol=symbol,
+                side="sell",
+                volume=volume,
+                sl_points=sl_points,
+                tp_points=tp_points,
+            )
+            if preview:
+                self._render_preview_card(preview)
+        except Exception:
+            pass
+
+    def _render_preview_card(self, preview: dict):
+        if not preview:
+            return
+        risk_d = float(preview.get("risk_dollars", 0.0))
+        risk_pct = float(preview.get("risk_pct", 0.0))
+        profit_d = float(preview.get("profit_dollars", 0.0))
+        profit_pct = float(preview.get("profit_pct", 0.0))
+        margin = float(preview.get("margin", 0.0))
+        leverage = int(preview.get("leverage", 100))
+        notional = float(preview.get("notional", 0.0))
+        b_win = float(preview.get("balance_if_win", 0.0))
+        b_loss = float(preview.get("balance_if_loss", 0.0))
+
+        self.lbl_card_risk.setText(f"🛑 Max Loss (SL): -${risk_d:.2f} (-{risk_pct:.2f}%)")
+        self.lbl_card_profit.setText(f"🎯 Target Profit (TP): +${profit_d:.2f} (+{profit_pct:.2f}%)")
+        self.lbl_card_margin.setText(f"🔒 Margin Deposit: ${margin:.2f} (1:{leverage} Lev)")
+        self.lbl_card_value.setText(f"💼 Controlled Asset Value: ${notional:,.2f}")
+        self.lbl_card_outcome.setText(f"🏦 Projected Balance: Win: ${b_win:,.2f}  |  Loss: ${b_loss:,.2f}")
 
     def _move_selected_to_breakeven(self):
         if not self._prepare_mt5_action():
@@ -398,8 +618,10 @@ class TradingPanel(QWidget):
             f"Stops level: {contract.get('stops_level', '--')} points"
         )
 
+        self._context = context
         self._update_volume_spin(contract)
         self._populate_positions(positions)
+        self._update_preview_card()
 
         self._append_output(
             f"Refresh complete. Open positions: {len(positions)}."
@@ -468,6 +690,7 @@ class TradingPanel(QWidget):
             self.volume_spin.setValue(float(volume))
 
         side = str(data.get("side", "")).upper()
+        self._update_preview_card()
         self._append_output(
             f"Pre-filled ticket from signal: {symbol} {side} "
             f"| SL={self.sl_spin.value()} pts | TP={self.tp_spin.value()} pts | Vol={self.volume_spin.value():.2f}. "
@@ -544,21 +767,28 @@ class TradingPanel(QWidget):
                 row, 3, QTableWidgetItem(f"{float(position.get('volume', 0.0)):.2f}")
             )
             self.positions_table.setItem(
+                row, 4, QTableWidgetItem(f"${float(position.get('margin', 0.0)):.2f}")
+            )
+            max_r = float(position.get("max_risk", 0.0))
+            self.positions_table.setItem(
+                row, 5, QTableWidgetItem(f"-${max_r:.2f}" if max_r > 0 else "$0.00")
+            )
+            self.positions_table.setItem(
                 row,
-                4,
+                6,
                 QTableWidgetItem(f"{float(position.get('open_price', 0.0)):.5f}"),
             )
             self.positions_table.setItem(
-                row, 5, QTableWidgetItem(f"{float(position.get('sl', 0.0)):.5f}")
+                row, 7, QTableWidgetItem(f"{float(position.get('sl', 0.0)):.5f}")
             )
             self.positions_table.setItem(
-                row, 6, QTableWidgetItem(f"{float(position.get('tp', 0.0)):.5f}")
+                row, 8, QTableWidgetItem(f"{float(position.get('tp', 0.0)):.5f}")
             )
             self.positions_table.setItem(
-                row, 7, QTableWidgetItem(f"{float(position.get('profit', 0.0)):.2f}")
+                row, 9, QTableWidgetItem(f"{float(position.get('profit', 0.0)):.2f}")
             )
             self.positions_table.setItem(
-                row, 8, QTableWidgetItem(str(position.get("time", "")))
+                row, 10, QTableWidgetItem(str(position.get("time", "")))
             )
 
         self.positions_table.resizeColumnsToContents()

@@ -19,6 +19,7 @@ class TradeWorker(QThread):
 
     context_ready = pyqtSignal(object)
     execution_ready = pyqtSignal(object)
+    preview_ready = pyqtSignal(object)
     error = pyqtSignal(str)
 
     def __init__(self, action: str, payload: dict = None, parent=None):
@@ -57,6 +58,17 @@ class TradeWorker(QThread):
                     ticket=self.payload.get("ticket")
                 )
                 self.execution_ready.emit(result)
+
+            elif self.action == "preview":
+                result = executor.calculate_order_preview(
+                    symbol=self.payload.get("symbol"),
+                    side=self.payload.get("side", "buy"),
+                    volume=self.payload.get("volume", 0.01),
+                    sl_points=self.payload.get("sl_points", 0),
+                    tp_points=self.payload.get("tp_points", 0),
+                    target_risk=self.payload.get("target_risk"),
+                )
+                self.preview_ready.emit(result)
 
             else:
                 raise ValueError(f"Unknown trade worker action: {self.action}")

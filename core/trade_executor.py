@@ -153,6 +153,9 @@ class DemoTradeExecutor:
             "volume_max": volume_max,
             "volume_step": volume_step,
             "stops_level": stops_level,
+            "contract_size": float(getattr(symbol_info, "trade_contract_size", 100.0) or 100.0),
+            "tick_value": float(getattr(symbol_info, "trade_tick_value", 1.0) or 1.0),
+            "tick_size": float(getattr(symbol_info, "trade_tick_size", point) or point),
         }
 
     @staticmethod
@@ -296,6 +299,7 @@ class DemoTradeExecutor:
             "currency": str(account.currency),
             "trade_allowed": bool(terminal.trade_allowed) if terminal else False,
             "account_mode": "DEMO",
+            "leverage": int(getattr(account, "leverage", 100) or 100),
         }
 
     def _contract_info(self, symbol: str) -> Dict[str, Any]:
@@ -340,12 +344,42 @@ class DemoTradeExecutor:
             except Exception:
                 open_time = str(position.time)
 
+            pos_margin = 0.0
+            try:
+                calc_m = mt5.order_calc_margin(
+                    int(position.type),
+                    str(position.symbol),
+                    float(position.volume),
+                    float(position.price_open),
+                )
+                if calc_m is not None:
+                    pos_margin = float(calc_m)
+            except Exception:
+                pos_margin = 0.0
+
+            max_risk = 0.0
+            try:
+                if float(position.sl) > 0:
+                    calc_p = mt5.order_calc_profit(
+                        int(position.type),
+                        str(position.symbol),
+                        float(position.volume),
+                        float(position.price_open),
+                        float(position.sl),
+                    )
+                    if calc_p is not None:
+                        max_risk = abs(float(calc_p))
+            except Exception:
+                max_risk = 0.0
+
             result.append(
                 {
                     "ticket": int(position.ticket),
                     "symbol": str(position.symbol),
                     "type": position_type,
                     "volume": float(position.volume),
+                    "margin": pos_margin,
+                    "max_risk": max_risk,
                     "open_price": float(position.price_open),
                     "current_price": float(getattr(position, "price_current", position.price_open)),
                     "sl": float(position.sl),
@@ -694,5 +728,112 @@ class DemoTradeExecutor:
                 notes=notes,
             )
 
+        finally:
+            self._shutdown()
+
+    def calculate_order_preview(
+        self,
+        symbol: str,
+        side: str = "buy",
+        volume: float = 0.01,
+        sl_points: int = 0,
+        tp_points: int = 0,
+        target_risk: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """
+        Calculate financial breakdown and order metrics before execution:
+        - Auto-calculated volume if target_risk ($) is provided
+        - Required Margin deposit ($) with broker leverage
+        - Maximum loss if Stop Loss is hit ($ and %)
+        - Target profit if Take Profit is hit ($ and %)
+        - Total notional asset value controlled ($)
+        - Projected account balance if win / loss
+        """
+        try:
+            self._initialize()
+            symbol_info = MT5Connector.get_symbol_info(symbol)
+            if not symbol_info:
+                return {}
+
+            tick = mt5.symbol_info_tick(symbol_info.name)
+            if not tick:
+                return {}
+
+            is_buy = side.lower() == "buy"
+            order_type = getattr(mt5, "ORDER_TYPE_BUY", 0) if is_buy else getattr(mt5, "ORDER_TYPE_SELL", 1)
+            entry = float(tick.ask if is_buy else tick.bid)
+            point = float(symbol_info.point)
+            digits = int(symbol_info.digits)
+
+            sl_price = self.round_price(
+                (entry - sl_points * point) if is_buy else (entry + sl_points * point),
+                digits,
+            ) if sl_points > 0 else 0.0
+
+            tp_price = self.round_price(
+                (entry + tp_points * point) if is_buy else (entry - tp_points * point),
+                digits,
+            ) if tp_points > 0 else 0.0
+
+            vol = float(volume)
+            # If target_risk ($) is specified, calculate the exact volume
+            if target_risk is not None and target_risk > 0 and sl_points > 0 and sl_price > 0:
+                calc_1lot = mt5.order_calc_profit(order_type, symbol_info.name, 1.0, entry, sl_price)
+                if calc_1lot is not None and abs(calc_1lot) > 0:
+                    raw_vol = float(target_risk) / abs(float(calc_1lot))
+                    step = float(getattr(symbol_info, "volume_step", 0.01) or 0.01)
+                    steps = round(raw_vol / step)
+                    vol = max(
+                        float(symbol_info.volume_min),
+                        min(float(symbol_info.volume_max), steps * step),
+                    )
+
+            vol = round(vol, 2)
+            margin = 0.0
+            calc_m = mt5.order_calc_margin(order_type, symbol_info.name, vol, entry)
+            if calc_m is not None:
+                margin = float(calc_m)
+
+            risk_dollars = 0.0
+            if sl_points > 0 and sl_price > 0:
+                calc_p = mt5.order_calc_profit(order_type, symbol_info.name, vol, entry, sl_price)
+                if calc_p is not None:
+                    risk_dollars = abs(float(calc_p))
+
+            profit_dollars = 0.0
+            if tp_points > 0 and tp_price > 0:
+                calc_p = mt5.order_calc_profit(order_type, symbol_info.name, vol, entry, tp_price)
+                if calc_p is not None:
+                    profit_dollars = float(calc_p)
+
+            contract_size = float(getattr(symbol_info, "trade_contract_size", 100.0) or 100.0)
+            notional = vol * contract_size * entry
+
+            account = self._account_summary()
+            balance = float(account.get("balance", 0.0))
+            leverage = int(account.get("leverage", 100))
+            risk_pct = (risk_dollars / balance * 100.0) if balance > 0 else 0.0
+            profit_pct = (profit_dollars / balance * 100.0) if balance > 0 else 0.0
+
+            return {
+                "symbol": symbol_info.name,
+                "side": "BUY" if is_buy else "SELL",
+                "volume": vol,
+                "entry_price": entry,
+                "sl_price": sl_price,
+                "tp_price": tp_price,
+                "margin": round(margin, 2),
+                "leverage": leverage,
+                "risk_dollars": round(risk_dollars, 2),
+                "risk_pct": round(risk_pct, 2),
+                "profit_dollars": round(profit_dollars, 2),
+                "profit_pct": round(profit_pct, 2),
+                "notional": round(notional, 2),
+                "balance": balance,
+                "balance_if_win": round(balance + profit_dollars, 2),
+                "balance_if_loss": round(balance - risk_dollars, 2),
+            }
+        except Exception:
+            return {}
         finally:
             self._shutdown()
