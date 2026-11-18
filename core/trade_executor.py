@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import math
+import time
 
 import MetaTrader5 as mt5
 
@@ -318,11 +319,22 @@ class DemoTradeExecutor:
         result = []
         buy_type = getattr(mt5, "POSITION_TYPE_BUY", 0)
 
+        # Calculate server-to-local timezone offset so displayed times match local PC clock
+        server_offset = 0
+        try:
+            sample_sym = symbol if symbol else (positions[0].symbol if positions else "EURUSD")
+            tick = self._mt5.symbol_info_tick(sample_sym)
+            if tick and getattr(tick, "time", None):
+                server_offset = int(tick.time - time.time())
+        except Exception:
+            server_offset = 0
+
         for position in positions:
             position_type = "BUY" if int(position.type) == int(buy_type) else "SELL"
 
             try:
-                open_time = datetime.fromtimestamp(int(position.time)).strftime(
+                local_ts = int(position.time) - server_offset
+                open_time = datetime.fromtimestamp(local_ts).strftime(
                     "%Y-%m-%d %H:%M:%S"
                 )
             except Exception:
