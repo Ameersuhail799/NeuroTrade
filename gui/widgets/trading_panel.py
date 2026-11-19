@@ -687,7 +687,17 @@ class TradingPanel(QWidget):
                 self.lbl_gate_session.setStyleSheet("color: #ffd43b; font-size: 10px;")
 
             # Synthesis Verdict
-            if not gate_value_ok:
+            is_1m_trap = getattr(self, "_last_signal_timeframe", "") in ("1m", "m1", "1min")
+            if is_1m_trap:
+                self.lbl_dh_badge.setText("🔴 NO-GO: 1m NOISE TRAP")
+                self.lbl_dh_badge.setStyleSheet(
+                    "background-color: #4a1515; color: #ff6b6b; font-weight: bold; font-size: 11px; padding: 2px 8px; border-radius: 4px;"
+                )
+                self.lbl_dh_summary.setText("1-minute chart is micro-tick noise and spread whipsaws. Generate signals on 15m or 1H.")
+                self.decision_helper_frame.setStyleSheet(
+                    "QFrame { background-color: #241416; border: 1px solid #742a2a; border-radius: 6px; padding: 2px 6px; }"
+                )
+            elif not gate_value_ok:
                 self.lbl_dh_badge.setText("🔴 NO-GO: OVEREXTENDED")
                 self.lbl_dh_badge.setStyleSheet(
                     "background-color: #4a1515; color: #ff6b6b; font-weight: bold; font-size: 11px; padding: 2px 8px; border-radius: 4px;"
@@ -897,7 +907,9 @@ class TradingPanel(QWidget):
         is_overextended = data.get("is_overextended", False)
         overext_ratio = float(data.get("overextension_ratio", 0.0))
         warnings = data.get("warnings", [])
+        timeframe = str(data.get("timeframe", "")).strip().lower()
 
+        self._last_signal_timeframe = timeframe
         self._last_is_overextended = is_overextended or overext_ratio > 1.5 or any("overextended" in str(w).lower() or "exhaustion" in str(w).lower() for w in warnings)
         self._last_overext_ratio = overext_ratio
         self._last_signal_warnings = list(warnings)

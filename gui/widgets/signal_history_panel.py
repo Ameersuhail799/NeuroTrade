@@ -432,6 +432,7 @@ class SignalHistoryPanel(QWidget):
 
             payload = {
                 "symbol": record.symbol,
+                "timeframe": record.timeframe,
                 "side": side,
                 "sl_points": sl_points,
                 "tp_points": tp_points,

@@ -170,6 +170,50 @@ class OverextensionAndPostMortemTests(unittest.TestCase):
         )
         self.assertIn("Normal adverse stop sweep", clean_diagnosis)
 
+    def test_micro_timeframe_1m_caps_confidence(self):
+        """
+        Verifies that on a 1-minute chart (1m), even if all 5 rules align,
+        the engine caps confidence at 50.0% max and issues a MICRO-TIMEFRAME WARNING
+        to prevent users from being fooled into treating 1m noise as a high-confidence setup.
+        """
+        rows = 70
+        close = np.linspace(3720, 3730, rows)
+        close[-1] = 3731.0
+        sma_20 = np.full(rows, 3725.0)
+        ema_50 = np.full(rows, 3722.0)
+        rsi = np.full(rows, 55.0)
+        atr = np.full(rows, 5.0)
+        macd = np.full(rows, 2.0)
+        macd_signal = np.full(rows, 1.0)
+        bb_middle = np.full(rows, 3725.0)
+        bb_upper = np.full(rows, 3735.0)
+        bb_lower = np.full(rows, 3715.0)
+
+        df = pd.DataFrame({
+            "close": close,
+            "sma_20": sma_20,
+            "ema_50": ema_50,
+            "rsi_14": rsi,
+            "atr_14": atr,
+            "macd": macd,
+            "macd_signal": macd_signal,
+            "macd_hist": macd - macd_signal,
+            "bb_middle": bb_middle,
+            "bb_upper": bb_upper,
+            "bb_lower": bb_lower,
+        })
+
+        # Evaluate on 1m
+        res_rule = self.rule_engine.evaluate(df, meta={"symbol": "XAUUSD", "timeframe": "1m"}, exclude_latest=False)
+        self.assertEqual(res_rule.action, "LONG_BIAS")
+        self.assertLessEqual(res_rule.confidence, 50.0)
+        self.assertTrue(any("MICRO-TIMEFRAME WARNING" in w for w in res_rule.warnings))
+
+        res_adapt = self.adaptive_engine.evaluate(df, meta={"symbol": "XAUUSD", "timeframe": "1m"}, exclude_latest=False)
+        self.assertEqual(res_adapt.action, "LONG_BIAS")
+        self.assertLessEqual(res_adapt.confidence, 50.0)
+        self.assertTrue(any("MICRO-TIMEFRAME WARNING" in w for w in res_adapt.warnings))
+
 
 if __name__ == "__main__":
     unittest.main()

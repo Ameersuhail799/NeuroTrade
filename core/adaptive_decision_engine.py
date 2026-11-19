@@ -164,6 +164,21 @@ class AdaptiveDecisionEngine:
         if is_overextended:
             confidence = min(40.0, confidence)
 
+        # Micro-timeframe guard (1m / 5m noise penalty)
+        tf_clean = str(meta.get("timeframe", "")).strip().lower()
+        if tf_clean in ("1m", "m1", "1min"):
+            warnings.append(
+                "MICRO-TIMEFRAME WARNING: 1m signals capture high-frequency spread noise. "
+                "Rule alignment reflects micro-momentum only and has high false-positive rates "
+                "during higher-timeframe trends. Confidence capped at 50% max."
+            )
+            confidence = min(50.0, confidence)
+        elif tf_clean in ("5m", "m5", "5min") and confidence > 75.0:
+            warnings.append(
+                "LOW-TIMEFRAME NOTICE: 5m signals are subject to intraday whipsaws. "
+                "Verify 15m/1H trend alignment before execution."
+            )
+
         inputs = {
             "close": self._optional(row.get("close")),
             "sma_20": self._optional(row.get("sma_20")),
