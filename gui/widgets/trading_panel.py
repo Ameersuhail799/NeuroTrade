@@ -51,6 +51,9 @@ class TradingPanel(QWidget):
         self._enabled = False
         self._updating_sizing = False
         self._context = {}
+        self._last_is_overextended = False
+        self._last_overext_ratio = 0.0
+        self._last_signal_warnings = []
 
         self._build_ui()
 
@@ -204,32 +207,69 @@ class TradingPanel(QWidget):
 
         order_layout.addWidget(self.preview_card, 3, 0, 1, 4)
 
-        # Row 4: Confluence & Safety Shield Warning Banner
-        self.shield_banner = QFrame()
-        self.shield_banner.setStyleSheet(
-            "QFrame { background-color: #382410; border: 1px solid #f59f00; border-radius: 6px; padding: 6px; }"
+        # Row 4: Ultra-Sleek Pre-Flight Decision Helper (Trade or No-Trade)
+        self.decision_helper_frame = QFrame()
+        self.decision_helper_frame.setStyleSheet(
+            "QFrame { background-color: #171b26; border: 1px solid #2d3342; border-radius: 6px; padding: 2px 6px; }"
         )
-        shield_layout = QHBoxLayout(self.shield_banner)
-        shield_layout.setContentsMargins(8, 4, 8, 4)
-        shield_layout.setSpacing(8)
+        dh_layout = QVBoxLayout(self.decision_helper_frame)
+        dh_layout.setContentsMargins(6, 4, 6, 4)
+        dh_layout.setSpacing(2)
 
-        self.lbl_shield_icon = QLabel("🛡️")
-        self.lbl_shield_icon.setStyleSheet("font-size: 16px;")
-        shield_layout.addWidget(self.lbl_shield_icon)
+        # Top Bar: Badge + Recommendation + Collapsible Toggle (Single line by default!)
+        top_bar = QHBoxLayout()
+        top_bar.setContentsMargins(0, 0, 0, 0)
+        top_bar.setSpacing(8)
 
-        self.lbl_shield_text = QLabel("SAFETY SHIELD ACTIVE: No overextension detected.")
-        self.lbl_shield_text.setStyleSheet("color: #ffd43b; font-weight: bold; font-size: 11px;")
-        self.lbl_shield_text.setWordWrap(True)
-        shield_layout.addWidget(self.lbl_shield_text, stretch=1)
+        self.lbl_dh_badge = QLabel("🟢 GO: CLEAR TO TRADE")
+        self.lbl_dh_badge.setStyleSheet(
+            "background-color: #1b4332; color: #51cf66; font-weight: bold; font-size: 11px; padding: 2px 8px; border-radius: 4px;"
+        )
+        top_bar.addWidget(self.lbl_dh_badge)
 
-        self.btn_dismiss_shield = QPushButton("Dismiss")
-        self.btn_dismiss_shield.setFixedWidth(60)
-        self.btn_dismiss_shield.setStyleSheet("background-color: #495057; color: #f8f9fa; font-size: 10px;")
-        self.btn_dismiss_shield.clicked.connect(lambda: self.shield_banner.setVisible(False))
-        shield_layout.addWidget(self.btn_dismiss_shield)
+        self.lbl_dh_summary = QLabel("All institutional gates green. R:R 1.5R | Low friction.")
+        self.lbl_dh_summary.setStyleSheet("color: #ced4da; font-size: 11px;")
+        self.lbl_dh_summary.setWordWrap(True)
+        top_bar.addWidget(self.lbl_dh_summary, stretch=1)
 
-        self.shield_banner.setVisible(False)
-        order_layout.addWidget(self.shield_banner, 4, 0, 1, 4)
+        self.btn_dh_details = QPushButton("Checklist ▾")
+        self.btn_dh_details.setFixedWidth(75)
+        self.btn_dh_details.setStyleSheet(
+            "background-color: #2b303c; color: #adb5bd; font-size: 10px; border-radius: 3px; padding: 2px;"
+        )
+        self.btn_dh_details.clicked.connect(self._toggle_dh_details)
+        top_bar.addWidget(self.btn_dh_details)
+
+        dh_layout.addLayout(top_bar)
+
+        # Collapsible Checklist Drawer (Zero clutter, stays hidden unless requested)
+        self.dh_details_widget = QWidget()
+        self.dh_details_widget.setVisible(False)
+        details_layout = QGridLayout(self.dh_details_widget)
+        details_layout.setContentsMargins(4, 4, 4, 2)
+        details_layout.setHorizontalSpacing(14)
+        details_layout.setVerticalSpacing(2)
+
+        self.lbl_gate_trend = QLabel("• Macro Trend: Aligned")
+        self.lbl_gate_value = QLabel("• Value Proximity: In Zone (<1.5x ATR)")
+        self.lbl_gate_rr = QLabel("• Risk/Reward: 1.50R (Valid)")
+        self.lbl_gate_spread = QLabel("• Spread Friction: 2.5% (Low)")
+        self.lbl_gate_session = QLabel("• Session: Active")
+
+        for lbl in (self.lbl_gate_trend, self.lbl_gate_value, self.lbl_gate_rr, self.lbl_gate_spread, self.lbl_gate_session):
+            lbl.setStyleSheet("color: #9aa0a6; font-size: 10px;")
+
+        details_layout.addWidget(self.lbl_gate_trend, 0, 0)
+        details_layout.addWidget(self.lbl_gate_value, 0, 1)
+        details_layout.addWidget(self.lbl_gate_rr, 0, 2)
+        details_layout.addWidget(self.lbl_gate_spread, 1, 0)
+        details_layout.addWidget(self.lbl_gate_session, 1, 1, 1, 2)
+
+        dh_layout.addWidget(self.dh_details_widget)
+
+        # Shield banner alias for compatibility
+        self.shield_banner = self.decision_helper_frame
+        order_layout.addWidget(self.decision_helper_frame, 4, 0, 1, 4)
 
         # Row 5: Action buttons
         self.refresh_button = QPushButton("Refresh")
@@ -567,6 +607,140 @@ class TradingPanel(QWidget):
         self.lbl_card_margin.setText(f"🔒 Margin Deposit: ${margin:.2f} (1:{leverage} Lev)")
         self.lbl_card_value.setText(f"💼 Controlled Asset Value: ${notional:,.2f}")
         self.lbl_card_outcome.setText(f"🏦 Projected Balance: Win: ${b_win:,.2f}  |  Loss: ${b_loss:,.2f}")
+        self._update_decision_helper()
+
+    def _toggle_dh_details(self):
+        is_vis = self.dh_details_widget.isVisible()
+        self.dh_details_widget.setVisible(not is_vis)
+        self.btn_dh_details.setText("Checklist ▴" if not is_vis else "Checklist ▾")
+
+    def _update_decision_helper(self):
+        try:
+            sl = max(10, int(self.sl_spin.value()))
+            tp = max(10, int(self.tp_spin.value()))
+            rr = round(tp / sl, 2)
+
+            is_overextended = getattr(self, "_last_is_overextended", False)
+            overext_ratio = getattr(self, "_last_overext_ratio", 0.0)
+            last_warnings = getattr(self, "_last_signal_warnings", [])
+
+            # Spread friction
+            spread = 20.0
+            if self._context and "contract" in self._context:
+                spread = float(self._context["contract"].get("spread", 20.0))
+            spread_friction = (spread / sl) if sl > 0 else 0.0
+
+            # Session timing (UTC)
+            import datetime
+            now_utc_hour = datetime.datetime.now(datetime.timezone.utc).hour
+            is_rollover = (now_utc_hour >= 21 or now_utc_hour < 1)
+
+            # Gate 1: Trend Alignment
+            gate_trend_ok = True
+            mtf_conflicts = [w for w in last_warnings if "mtf conflict" in str(w).lower() or "not aligned" in str(w).lower()]
+            if mtf_conflicts:
+                gate_trend_ok = False
+                self.lbl_gate_trend.setText("• Macro Trend: ❌ Conflict")
+                self.lbl_gate_trend.setStyleSheet("color: #ff6b6b; font-size: 10px;")
+            else:
+                self.lbl_gate_trend.setText("• Macro Trend: ✅ Aligned")
+                self.lbl_gate_trend.setStyleSheet("color: #51cf66; font-size: 10px;")
+
+            # Gate 2: Value Proximity
+            gate_value_ok = not is_overextended and overext_ratio <= 1.5
+            if not gate_value_ok:
+                ratio_str = f"{overext_ratio:.1f}x" if overext_ratio > 0 else ">1.5x"
+                self.lbl_gate_value.setText(f"• Value Proximity: ❌ Overextended ({ratio_str} ATR)")
+                self.lbl_gate_value.setStyleSheet("color: #ff6b6b; font-size: 10px;")
+            else:
+                self.lbl_gate_value.setText("• Value Proximity: ✅ In Zone (<1.5x ATR)")
+                self.lbl_gate_value.setStyleSheet("color: #51cf66; font-size: 10px;")
+
+            # Gate 3: Risk / Reward Expectancy
+            gate_rr_ok = rr >= 1.5
+            gate_rr_acceptable = rr >= 1.0
+            if gate_rr_ok:
+                self.lbl_gate_rr.setText(f"• Risk/Reward: ✅ {rr:.2f}R (Optimal)")
+                self.lbl_gate_rr.setStyleSheet("color: #51cf66; font-size: 10px;")
+            elif gate_rr_acceptable:
+                self.lbl_gate_rr.setText(f"• Risk/Reward: ⚠️ {rr:.2f}R (Sub-optimal)")
+                self.lbl_gate_rr.setStyleSheet("color: #ffd43b; font-size: 10px;")
+            else:
+                self.lbl_gate_rr.setText(f"• Risk/Reward: ❌ {rr:.2f}R (Negative Expectancy)")
+                self.lbl_gate_rr.setStyleSheet("color: #ff6b6b; font-size: 10px;")
+
+            # Gate 4: Spread Friction
+            gate_spread_ok = spread_friction <= 0.08
+            if gate_spread_ok:
+                self.lbl_gate_spread.setText(f"• Spread Friction: ✅ {spread_friction:.1%} (Low)")
+                self.lbl_gate_spread.setStyleSheet("color: #51cf66; font-size: 10px;")
+            else:
+                self.lbl_gate_spread.setText(f"• Spread Friction: ❌ {spread_friction:.1%} (High)")
+                self.lbl_gate_spread.setStyleSheet("color: #ff6b6b; font-size: 10px;")
+
+            # Gate 5: Session
+            if not is_rollover:
+                self.lbl_gate_session.setText("• Session: ✅ Active Liquidity")
+                self.lbl_gate_session.setStyleSheet("color: #51cf66; font-size: 10px;")
+            else:
+                self.lbl_gate_session.setText("• Session: ⚠️ Rollover / Spread Spikes")
+                self.lbl_gate_session.setStyleSheet("color: #ffd43b; font-size: 10px;")
+
+            # Synthesis Verdict
+            if not gate_value_ok:
+                self.lbl_dh_badge.setText("🔴 NO-GO: OVEREXTENDED")
+                self.lbl_dh_badge.setStyleSheet(
+                    "background-color: #4a1515; color: #ff6b6b; font-weight: bold; font-size: 11px; padding: 2px 8px; border-radius: 4px;"
+                )
+                self.lbl_dh_summary.setText("Price is stretched from 20MA. High risk of mean-reversion squeeze; wait for pullback.")
+                self.decision_helper_frame.setStyleSheet(
+                    "QFrame { background-color: #241416; border: 1px solid #742a2a; border-radius: 6px; padding: 2px 6px; }"
+                )
+            elif not gate_trend_ok:
+                self.lbl_dh_badge.setText("🔴 NO-GO: MTF CONFLICT")
+                self.lbl_dh_badge.setStyleSheet(
+                    "background-color: #4a1515; color: #ff6b6b; font-weight: bold; font-size: 11px; padding: 2px 8px; border-radius: 4px;"
+                )
+                self.lbl_dh_summary.setText("Higher-timeframe structure opposes this order. Low statistical edge.")
+                self.decision_helper_frame.setStyleSheet(
+                    "QFrame { background-color: #241416; border: 1px solid #742a2a; border-radius: 6px; padding: 2px 6px; }"
+                )
+            elif not gate_rr_acceptable:
+                self.lbl_dh_badge.setText("🔴 NO-GO: POOR R:R")
+                self.lbl_dh_badge.setStyleSheet(
+                    "background-color: #4a1515; color: #ff6b6b; font-weight: bold; font-size: 11px; padding: 2px 8px; border-radius: 4px;"
+                )
+                self.lbl_dh_summary.setText(f"Take Profit is smaller than Stop Loss ({rr:.2f}R). Increase TP for positive expectancy.")
+                self.decision_helper_frame.setStyleSheet(
+                    "QFrame { background-color: #241416; border: 1px solid #742a2a; border-radius: 6px; padding: 2px 6px; }"
+                )
+            elif not gate_rr_ok or is_rollover or not gate_spread_ok:
+                self.lbl_dh_badge.setText("🟡 CAUTION: SUB-OPTIMAL")
+                self.lbl_dh_badge.setStyleSheet(
+                    "background-color: #433310; color: #ffd43b; font-weight: bold; font-size: 11px; padding: 2px 8px; border-radius: 4px;"
+                )
+                reasons = []
+                if not gate_rr_ok:
+                    reasons.append("R:R < 1.5R")
+                if is_rollover:
+                    reasons.append("Rollover hours")
+                if not gate_spread_ok:
+                    reasons.append("High spread friction")
+                self.lbl_dh_summary.setText(f"{', '.join(reasons)}. Consider waiting for pullback or reducing risk.")
+                self.decision_helper_frame.setStyleSheet(
+                    "QFrame { background-color: #241f14; border: 1px solid #6b5820; border-radius: 6px; padding: 2px 6px; }"
+                )
+            else:
+                self.lbl_dh_badge.setText("🟢 GO: TRADE APPROVED")
+                self.lbl_dh_badge.setStyleSheet(
+                    "background-color: #1b4332; color: #51cf66; font-weight: bold; font-size: 11px; padding: 2px 8px; border-radius: 4px;"
+                )
+                self.lbl_dh_summary.setText(f"All 5 institutional gates green. R:R {rr:.2f}R | Low friction.")
+                self.decision_helper_frame.setStyleSheet(
+                    "QFrame { background-color: #14241a; border: 1px solid #245834; border-radius: 6px; padding: 2px 6px; }"
+                )
+        except Exception:
+            pass
 
     def _move_selected_to_breakeven(self):
         if not self._prepare_mt5_action():
@@ -719,26 +893,17 @@ class TradingPanel(QWidget):
         side = str(data.get("side", "")).upper()
         self._update_preview_card()
 
-        # Check for overextension or MTF conflict to activate the Safety Shield Banner
+        # Update tracking for Pre-Flight Decision Helper
         is_overextended = data.get("is_overextended", False)
         overext_ratio = float(data.get("overextension_ratio", 0.0))
         warnings = data.get("warnings", [])
 
-        trigger_shield = is_overextended or overext_ratio > 1.5 or any("overextended" in str(w).lower() or "exhaustion" in str(w).lower() for w in warnings)
+        self._last_is_overextended = is_overextended or overext_ratio > 1.5 or any("overextended" in str(w).lower() or "exhaustion" in str(w).lower() for w in warnings)
+        self._last_overext_ratio = overext_ratio
+        self._last_signal_warnings = list(warnings)
 
-        if trigger_shield:
-            msg = "Price is overextended (> 1.5x ATR). Extreme risk of mean-reversion squeeze!"
-            for w in warnings:
-                if "overextended" in str(w).lower() or "exhaustion" in str(w).lower():
-                    msg = str(w)
-                    break
-            self.lbl_shield_text.setText(f"🛡️ SAFETY SHIELD: {msg} Exercise extreme caution before opening.")
-            self.shield_banner.setStyleSheet(
-                "QFrame { background-color: #3d1b1b; border: 1px solid #ff6b6b; border-radius: 6px; padding: 6px; }"
-            )
-            self.shield_banner.setVisible(True)
-        else:
-            self.shield_banner.setVisible(False)
+        self._update_preview_card()
+        self._update_decision_helper()
 
         self._append_output(
             f"Pre-filled ticket from signal: {symbol} {side} "
