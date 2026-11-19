@@ -419,6 +419,17 @@ class SignalHistoryPanel(QWidget):
             else:
                 tp_points = max(20, int(round(sl_points * 1.5)))
 
+            # Check for overextension and warnings
+            is_overextended = False
+            overext_ratio = 0.0
+            warnings_list = list(record.warnings or [])
+            if isinstance(record.inputs, dict):
+                is_overextended = bool(record.inputs.get("is_overextended", False))
+                overext_ratio = float(record.inputs.get("overextension_ratio", 0.0))
+                intraday_conflicts = record.inputs.get("intraday_metadata", {}).get("conflicts", [])
+                if intraday_conflicts:
+                    warnings_list.extend(intraday_conflicts)
+
             payload = {
                 "symbol": record.symbol,
                 "side": side,
@@ -429,6 +440,10 @@ class SignalHistoryPanel(QWidget):
                 "take_profit_1": tp1,
                 "risk_pct": 1.0,
                 "confluence_score": float(record.confidence),
+                "is_overextended": is_overextended,
+                "overextension_ratio": overext_ratio,
+                "warnings": warnings_list,
+                "engine": record.engine,
             }
 
             self._log(

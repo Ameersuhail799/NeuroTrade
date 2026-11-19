@@ -204,22 +204,49 @@ class TradingPanel(QWidget):
 
         order_layout.addWidget(self.preview_card, 3, 0, 1, 4)
 
-        # Row 4: Action buttons
+        # Row 4: Confluence & Safety Shield Warning Banner
+        self.shield_banner = QFrame()
+        self.shield_banner.setStyleSheet(
+            "QFrame { background-color: #382410; border: 1px solid #f59f00; border-radius: 6px; padding: 6px; }"
+        )
+        shield_layout = QHBoxLayout(self.shield_banner)
+        shield_layout.setContentsMargins(8, 4, 8, 4)
+        shield_layout.setSpacing(8)
+
+        self.lbl_shield_icon = QLabel("🛡️")
+        self.lbl_shield_icon.setStyleSheet("font-size: 16px;")
+        shield_layout.addWidget(self.lbl_shield_icon)
+
+        self.lbl_shield_text = QLabel("SAFETY SHIELD ACTIVE: No overextension detected.")
+        self.lbl_shield_text.setStyleSheet("color: #ffd43b; font-weight: bold; font-size: 11px;")
+        self.lbl_shield_text.setWordWrap(True)
+        shield_layout.addWidget(self.lbl_shield_text, stretch=1)
+
+        self.btn_dismiss_shield = QPushButton("Dismiss")
+        self.btn_dismiss_shield.setFixedWidth(60)
+        self.btn_dismiss_shield.setStyleSheet("background-color: #495057; color: #f8f9fa; font-size: 10px;")
+        self.btn_dismiss_shield.clicked.connect(lambda: self.shield_banner.setVisible(False))
+        shield_layout.addWidget(self.btn_dismiss_shield)
+
+        self.shield_banner.setVisible(False)
+        order_layout.addWidget(self.shield_banner, 4, 0, 1, 4)
+
+        # Row 5: Action buttons
         self.refresh_button = QPushButton("Refresh")
         self.refresh_button.clicked.connect(self._refresh_context)
-        order_layout.addWidget(self.refresh_button, 4, 0)
+        order_layout.addWidget(self.refresh_button, 5, 0)
 
         self.open_long_button = QPushButton("Open Demo Long")
         self.open_long_button.clicked.connect(lambda: self._open_position("buy"))
-        order_layout.addWidget(self.open_long_button, 4, 1)
+        order_layout.addWidget(self.open_long_button, 5, 1)
 
         self.open_short_button = QPushButton("Open Demo Short")
         self.open_short_button.clicked.connect(lambda: self._open_position("sell"))
-        order_layout.addWidget(self.open_short_button, 4, 2)
+        order_layout.addWidget(self.open_short_button, 5, 2)
 
         self.close_button = QPushButton("Close Selected Position")
         self.close_button.clicked.connect(self._close_selected_position)
-        order_layout.addWidget(self.close_button, 4, 3)
+        order_layout.addWidget(self.close_button, 5, 3)
 
         root_layout.addWidget(order_group)
 
@@ -691,6 +718,28 @@ class TradingPanel(QWidget):
 
         side = str(data.get("side", "")).upper()
         self._update_preview_card()
+
+        # Check for overextension or MTF conflict to activate the Safety Shield Banner
+        is_overextended = data.get("is_overextended", False)
+        overext_ratio = float(data.get("overextension_ratio", 0.0))
+        warnings = data.get("warnings", [])
+
+        trigger_shield = is_overextended or overext_ratio > 1.5 or any("overextended" in str(w).lower() or "exhaustion" in str(w).lower() for w in warnings)
+
+        if trigger_shield:
+            msg = "Price is overextended (> 1.5x ATR). Extreme risk of mean-reversion squeeze!"
+            for w in warnings:
+                if "overextended" in str(w).lower() or "exhaustion" in str(w).lower():
+                    msg = str(w)
+                    break
+            self.lbl_shield_text.setText(f"🛡️ SAFETY SHIELD: {msg} Exercise extreme caution before opening.")
+            self.shield_banner.setStyleSheet(
+                "QFrame { background-color: #3d1b1b; border: 1px solid #ff6b6b; border-radius: 6px; padding: 6px; }"
+            )
+            self.shield_banner.setVisible(True)
+        else:
+            self.shield_banner.setVisible(False)
+
         self._append_output(
             f"Pre-filled ticket from signal: {symbol} {side} "
             f"| SL={self.sl_spin.value()} pts | TP={self.tp_spin.value()} pts | Vol={self.volume_spin.value():.2f}. "

@@ -89,6 +89,8 @@ class RuleBasedDecisionEngine:
     SHORT_THRESHOLD = -40.0
     MIN_VALID_RULES = 4
     MIN_RECOMMENDED_ROWS = 60
+    MAX_ENTRY_EXTENSION_ATR = 1.5
+    ENFORCE_OVEREXTENSION_CAP = True
 
     def evaluate(
         self,
@@ -356,6 +358,34 @@ class RuleBasedDecisionEngine:
                 "Score is below the rule threshold for a directional bias."
             )
 
+        # Overextension and exhaustion guard
+        is_overextended = False
+        overextension_ratio = 0.0
+        if self._finite(atr) and atr > 0.0 and self._finite(close) and self._finite(sma20):
+            overextension_ratio = float(abs(close - sma20) / atr)
+            if overextension_ratio > self.MAX_ENTRY_EXTENSION_ATR:
+                is_overextended = True
+                warnings.append(
+                    f"OVEREXTENSION WARNING: Price is {overextension_ratio:.2f}x ATR away from SMA20. "
+                    "High risk of mean-reversion squeeze; late entry penalized."
+                )
+
+        if action == "SHORT_BIAS" and self._finite(rsi) and rsi < 35.0:
+            is_overextended = True
+            warnings.append(
+                f"EXHAUSTION WARNING: RSI is {rsi:.1f} (near oversold). "
+                "High probability of counter-trend bounce; do not chase."
+            )
+        elif action == "LONG_BIAS" and self._finite(rsi) and rsi > 65.0:
+            is_overextended = True
+            warnings.append(
+                f"EXHAUSTION WARNING: RSI is {rsi:.1f} (near overbought). "
+                "High probability of pullback; do not chase."
+            )
+
+        if is_overextended and getattr(self, "ENFORCE_OVEREXTENSION_CAP", True):
+            confidence = min(40.0, confidence)
+
         reasons: List[str] = []
         for rule in rules:
             if not rule.valid:
@@ -386,6 +416,8 @@ class RuleBasedDecisionEngine:
             "bb_middle": self._optional(values["bb_middle"]),
             "bb_upper": self._optional(values["bb_upper"]),
             "bb_lower": self._optional(values["bb_lower"]),
+            "is_overextended": is_overextended,
+            "overextension_ratio": round(overextension_ratio, 2) if self._finite(overextension_ratio) else 0.0,
         }
 
         return DecisionResult(

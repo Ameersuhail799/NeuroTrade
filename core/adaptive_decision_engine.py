@@ -131,6 +131,39 @@ class AdaptiveDecisionEngine:
 
         confidence = min(100.0, abs(score) / total_weight * 100.0)
 
+        # Overextension and exhaustion guard
+        is_overextended = False
+        overextension_ratio = 0.0
+        atr_val = as_float(row.get("atr_14"))
+        close_val = as_float(row.get("close"))
+        sma_val = as_float(row.get("sma_20"))
+        rsi_val = as_float(row.get("rsi_14"))
+
+        if is_finite(atr_val) and atr_val > 0.0 and is_finite(close_val) and is_finite(sma_val):
+            overextension_ratio = float(abs(close_val - sma_val) / atr_val)
+            if overextension_ratio > 1.5:
+                is_overextended = True
+                warnings.append(
+                    f"OVEREXTENSION WARNING: Price is {overextension_ratio:.2f}x ATR away from SMA20. "
+                    "High risk of mean-reversion squeeze; late entry penalized."
+                )
+
+        if action == "SHORT_BIAS" and is_finite(rsi_val) and rsi_val < 35.0:
+            is_overextended = True
+            warnings.append(
+                f"EXHAUSTION WARNING: RSI is {rsi_val:.1f} (near oversold). "
+                "High probability of counter-trend bounce; do not chase."
+            )
+        elif action == "LONG_BIAS" and is_finite(rsi_val) and rsi_val > 65.0:
+            is_overextended = True
+            warnings.append(
+                f"EXHAUSTION WARNING: RSI is {rsi_val:.1f} (near overbought). "
+                "High probability of pullback; do not chase."
+            )
+
+        if is_overextended:
+            confidence = min(40.0, confidence)
+
         inputs = {
             "close": self._optional(row.get("close")),
             "sma_20": self._optional(row.get("sma_20")),
@@ -143,6 +176,8 @@ class AdaptiveDecisionEngine:
             "bb_middle": self._optional(row.get("bb_middle")),
             "bb_upper": self._optional(row.get("bb_upper")),
             "bb_lower": self._optional(row.get("bb_lower")),
+            "is_overextended": is_overextended,
+            "overextension_ratio": round(overextension_ratio, 2) if is_finite(overextension_ratio) else 0.0,
         }
 
         return DecisionResult(

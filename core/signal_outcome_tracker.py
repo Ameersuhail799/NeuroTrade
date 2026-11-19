@@ -297,6 +297,15 @@ class SignalOutcomeTracker:
                     resolved_at = ""
                     exit_price = 0.0
 
+            notes = ""
+            if outcome_str == "HIT_SL (-1.0R)":
+                notes = SignalOutcomeTracker.diagnose_loss(
+                    sig_inputs=inputs,
+                    action=action,
+                    entry_price=entry_price,
+                    exit_price=exit_price,
+                )
+
             results.append(
                 SignalOutcomeRecord(
                     signal_id=sig_id,
@@ -310,10 +319,69 @@ class SignalOutcomeTracker:
                     holding_bars=holding_bars,
                     entry_price=entry_price,
                     exit_price=exit_price,
+                    notes=notes,
                 )
             )
 
         return results
+
+    @staticmethod
+    def diagnose_loss(
+        sig_inputs: Dict[str, Any],
+        action: str,
+        entry_price: float,
+        exit_price: float,
+    ) -> str:
+        """
+        Automated Post-Mortem Diagnostic for losing trades.
+        Analyzes overextension, RSI exhaustion, MTF conflicts, and session timing.
+        """
+        causes = []
+        inputs_dict = sig_inputs if isinstance(sig_inputs, dict) else {}
+
+        # 1. Check Overextension from Mean / ATR
+        atr = inputs_dict.get("atr_14")
+        sma = inputs_dict.get("sma_20")
+        if atr is not None and sma is not None:
+            try:
+                atr_f = float(atr)
+                sma_f = float(sma)
+                if atr_f > 0.0:
+                    ratio = abs(float(entry_price) - sma_f) / atr_f
+                    if ratio > 1.5:
+                        causes.append(f"Chased overextended move ({ratio:.2f}x ATR from 20MA)")
+            except (ValueError, TypeError):
+                pass
+
+        # 2. Check RSI Exhaustion
+        rsi = inputs_dict.get("rsi_14")
+        if rsi is not None:
+            try:
+                rsi_f = float(rsi)
+                if "SHORT" in action.upper() and rsi_f < 35.0:
+                    causes.append(f"Oversold exhaustion trap (RSI {rsi_f:.1f} at entry)")
+                elif "LONG" in action.upper() and rsi_f > 65.0:
+                    causes.append(f"Overbought exhaustion trap (RSI {rsi_f:.1f} at entry)")
+            except (ValueError, TypeError):
+                pass
+
+        # 3. Check MTF Conflicts / Filters
+        meta = inputs_dict.get("intraday_metadata")
+        if isinstance(meta, dict):
+            conflicts = meta.get("conflicts", [])
+            if conflicts:
+                causes.append(f"MTF conflict: {conflicts[0]}")
+
+        # 4. Check Session Liquidity
+        regime = inputs_dict.get("regime_and_microstructure")
+        if isinstance(regime, dict):
+            session = regime.get("session")
+            if session in ("ASIAN_ROLLOVER", "ASIAN_SESSION", "ROLLOVER"):
+                causes.append(f"Low liquidity rollover session ({session})")
+
+        if not causes:
+            return "Post-Mortem: Normal adverse stop sweep within statistical probability."
+        return "Post-Mortem: " + "; ".join(causes)
 
     @staticmethod
     def compute_calibration_report(resolved_records: List[SignalOutcomeRecord]) -> str:
